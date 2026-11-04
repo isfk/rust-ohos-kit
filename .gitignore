@@ -1,0 +1,27 @@
+# Rust
+target/
+**/*.rs.bk
+
+# The built core: platform/ohos/build.sh puts it here.
+*.so
+*.a
+*.o
+
+# HarmonyOS / DevEco
+app/build-profile.json5
+**/build/
+**/.hvigor/
+**/oh_modules/
+app/local.properties
+app/.idea/
+app/entry/libs/
+app/entry/.preview/
+*.hap
+*.har
+*.hsp
+
+# Session evidence (screenshots, commit drafts) — never shipped.
+.cache/
+
+# macOS
+.DS_Store

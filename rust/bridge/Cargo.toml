@@ -1,0 +1,18 @@
+[package]
+name = "rustkit-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The NAPI surface of the core: the only crate here that knows a phone exists."
+
+[lib]
+name = "rustcore"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustkit-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+cc = "1"

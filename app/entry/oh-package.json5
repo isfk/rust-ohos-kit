@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Rust core + ArkUI demo.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "librustcore.so": "file:./src/main/cpp/types/librustcore"
+  }
+}

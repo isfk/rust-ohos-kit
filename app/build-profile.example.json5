@@ -1,0 +1,49 @@
+// The project template: what the app is made of, and nothing about this
+// machine. `build-profile.json5` itself is gitignored — DevEco's
+// "Automatically generate signature" writes this machine's cert paths and
+// passwords into it, per bundle ID.
+//
+// No signing here on purpose: copy it to build-profile.json5 and sign once in
+// DevEco (Project Structure → Signing Configs), or just run
+// platform/ohos/run.sh, which does the copy for you.
+{
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug",
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        // The accelerometer: an install-time permission, no prompt. Sensors
+        // need one each — see the README's "平台能力" section.
+        "name": "ohos.permission.ACCELEROMETER"
+      },
+      {
+        // Lets a continuous task survive the app leaving the screen. System
+        // granted: install-time, no prompt.
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      },
+      {
+        // Location, coarse and precise: the two must be asked for together —
+        // asking for LOCATION alone is refused.
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:location_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:location_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
+      {
+        // The camera: a runtime one, asked for the first time it's used
+        // (requestPermissionsFromUser, in CameraCard.ets). A user_grant
+        // permission must say why and where — the installer rejects it
+        // otherwise ("The reason and usedScene attributes are mandatory").
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:camera_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      }
+    ],
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        // The kinds of continuous task this ability may start; 'location'
+        // matches the LOCATION mode in LocationCard.ets.
+        "backgroundModes": [
+          "location"
+        ],
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ],
+  }
+}

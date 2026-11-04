@@ -1,0 +1,22 @@
+# The NDK ships a clang wrapper named exactly what cargo asks for
+# (`aarch64-unknown-linux-ohos-clang`), and that wrapper already carries
+# `-target aarch64-linux-ohos --sysroot=<ndk>/native/sysroot`. So cross-compiling
+# is a PATH entry and a linker name — there is no patch to apply, which is the
+# whole claim of this repository. `platform/ohos/build.sh` puts the NDK on PATH.
+[target.aarch64-unknown-linux-ohos]
+linker = "aarch64-unknown-linux-ohos-clang"
+rustflags = [
+  "-C", "link-arg=-Wl,-soname,librustcore.so",
+  # `napi_module_register` and `OH_LOG_Print` are NOT provided by the app process:
+  # they live in these two system libraries, and an undefined reference to them
+  # fails at dlopen with "symbol not found" — after the .so built and shipped.
+  # The Go version says the same thing in ../go-ohos-kit/go/cgo_linux.go
+  # (`#cgo LDFLAGS: -lace_napi.z -lhilog_ndk.z`).
+  "-C", "link-arg=-lace_napi.z",
+  "-C", "link-arg=-lhilog_ndk.z",
+]
+
+[env]
+# `cc` compiles rust/bridge/csrc/napi_ohos.c; it needs the same toolchain.
+CC_aarch64_unknown_linux_ohos = "aarch64-unknown-linux-ohos-clang"
+AR_aarch64_unknown_linux_ohos = "llvm-ar"

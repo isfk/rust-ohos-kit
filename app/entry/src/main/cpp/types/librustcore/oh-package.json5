@@ -1,0 +1,6 @@
+{
+  "name": "librustcore.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "The Rust core's bridge (NAPI)."
+}
