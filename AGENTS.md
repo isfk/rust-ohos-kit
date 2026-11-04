@@ -63,7 +63,7 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 | 改了什么 | 拿什么结账 |
 |---|---|
 | `rust/core` | `cargo test -p rustkit-core` 输出（新逻辑必须有新用例） |
-| 桥 / 新导出 | `scripts/check.sh`（含交叉编译与两条断言）+ 真机调用一次 |
+| 桥 / 新导出 | `scripts/check.sh`（含交叉编译与五条断言）+ 真机调用一次 |
 | `napi_ohos.c` | `check.sh` 的 NEEDED 断言 + 真机启动一次（`hilog -x` 里不能有 `relocating`） |
 | ArkTS / UI | `platform/ohos/run.sh` + 真机截图；`hilog` 佐证 |
 

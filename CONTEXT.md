@@ -206,7 +206,7 @@ rust/core/              纯 Rust，cargo test 在 Mac 上跑，不认识手机
 rust/store/             唯一编 C 的 crate（rusqlite bundled）；隔开就是为了上面那条
 rust/bridge/            cdylib；src/lib.rs 是桥，csrc/napi_ohos.c 是 NAPI 那一层
 platform/ohos/          build.sh（交叉编译）、run.sh（编 + 装 + 跑）
-scripts/check.sh        fmt、clippy、test、交叉编译，以及两条硬断言
+scripts/check.sh        fmt、clippy、test、交叉编译，以及五条硬断言
 app/                    ArkTS 外壳，从 go-ohos-kit 搬来并改名（不是重新设计）
 ```
 
