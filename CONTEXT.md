@@ -10,7 +10,7 @@
 | 1 | Rust 在 OHOS 上要不要 runtime 补丁？ | **不要。已实测**：`cargo build --target aarch64-unknown-linux-ohos` 一次通过，零补丁 |
 | 2 | 桥的往返还是不是 0.28 µs（Go 版基线）？ | **已测，更便宜**：见第 3 节末尾的真机数字 |
 | 3 | 同一套 ArkTS UI 只换内核能不能直接工作？ | **是**：装机跑起来了，八个面板照旧，读数出自 Rust |
-| 4 | 体积和维护成本差多少？ | 已测：**11 MB + 4 个补丁 → 772 KB + 0 个补丁** |
+| 4 | 体积和维护成本差多少？ | 已测：**11 MB + 4 个补丁 → 2.7 MB + 0 个补丁**（不含 SQLite 时 788 KB） |
 
 ## 二、Go 版欠的四笔债，Rust 一笔都不用还
 
@@ -116,17 +116,24 @@ u16 len / title`，桥侧 `rows(offset, limit) -> ArrayBuffer` + `rowsJson`。
 173 KB vs 120 KB（约 2/3）** —— 省的是每行那 7 字节的框架而不是内容，标题占大头。
 测试断言按真实比例写（< 75%）。
 
-### 3. SQLite — 仍然没做，`db*` 现在返回理由
+### 3. SQLite — **已完成，而且结论和预想相反**
 
-`rustkit_db_*` 一律返回 `{"ok": false, "error": "not ported yet: …"}`，`dbCount()` 返回 0。
-面板会把这句话显示出来 —— 故意让它显眼，而不是悄悄少一块 UI。
+先做的判断是错的。当时的说法是「Rust 没有纯 Rust 的 SQLite，所以这一层更贵，可能做不了」。
+实测：`rustsqlite`(rusqlite) 0.41 + `bundled`，用 NDK 的 clang 交叉编译到
+`aarch64-unknown-linux-ohos` **20 秒通过**，跑起来比 Go 那套还快。
 
-真要做的时候：
+| 20k 行 | Go（modernc，纯 Go） | Rust（rusqlite，C） | 平台 relationalStore |
+|---|---|---|---|
+| seed | 60.2 ms | **12.3 ms** | 262.5 ms |
+| page 2k | 9.7 ms（store 6.82） | **5.5 ms（store 1.21）** | 9.2 ms |
 
-- `rusqlite` 的 `bundled` 要编 C（NDK 的 clang 能编，`.cargo/config.toml` 里 `CC`/`AR` 已经配好，
-  所以不难，只是"不再是纯 Rust"）
-- 纯 Rust 的 SQLite 重写（turso/limbo）还不够成熟
-- 或者绕开：platform 的 `relationalStore` 归 ArkTS，core 只做算术 —— 那就不再是同一个实验
+所以代价不是**能力**，是**纯度**：C 被编进了产物。处理方式是把 C 关进一个单独的 crate ——
+`rust/store`，和 Go 那边把 SQLite 关进 `go/store` 是同一个动作。`rust/core` 仍然不碰 FFI，
+`cargo test -p rustkit-core` 仍然不需要 SQLite。
+
+顺带一个数字：`.so` 从 788 KB 长到 **2.7 MB**（SQLite 的 C 约 1.9 MB），仍比 Go 版的 11 MB 小 4 倍。
+
+界面上那句自曝缺口的文案已经没了：现在这里显示 `Rust file ready` 和真读数。
 
 ### 4. 桥的 bench — 这是本仓库还没给出的那个数字
 
@@ -141,25 +148,36 @@ Go 基线（`go-ohos-kit` 的 BridgeCard，真机）：`int` 往返 **0.28 µs**
 `wire2.png`（桥的读数）、`db.png`（SQLite 那句自曝缺口）。八个面板都在，水准仪 49 samples/s、
 照片 `2.2 ms in Rust`、心跳在跑 —— 这些都是 Rust 推过来的。
 
-还没在真机上验的：暗色主题（三个仓库都没验过）、相机预览画面（`snapshot_display` 抓不到
-SURFACE 层，只能看状态行）、以及 300 KB 那条路径在 Rust 下的重复性（单次读数）。
+相机预览**已在真机上看到画面**（`.cache/cam-2.jpeg`，对着键盘）：截图能抓到 SURFACE 层，
+所以之前"截图抓不到"的说法是错的，已从 AGENTS.md 改掉。
 
-### 真机实测（`cn.isfk.rustkit`，2026-11-04，同一台设备）
+暗色主题：**主人在设备上切过并确认没问题，两个 app 表现一致**（两次移植用的是同一套 token，
+所以这既是验证也是对照）。我没有截图，记录里写明来源是人的观察，不是我的证据。
 
-| | Go 版 | Rust 版 |
-|---|---|---|
-| `int` 空往返 | 0.28 µs | **0.1 µs** |
-| JSON 回串 | 3.1 µs | **1.3 µs** |
-| 300 KB 过桥（其中桥） | 566.4 µs（89.4） | **383.3 µs（22.3）** |
-| 像素数学 | 477 µs | 361 µs |
-| 产物 | 11 MB + 4 补丁 | **788 KB + 0 补丁** |
+`scripts/check.sh` 里那条「两份 color.json 的 token 名集合必须一致」的检查留着：它挡的是
+"只在一个主题里定义了某个 token" 这类只在设备上现形的错，和人看没看过无关。
 
-桥那一栏（22.3 vs 89.4 µs）是这次唯一"语言真的变快了"的地方，原因也清楚：**cgo 一次调用要付
-运行时切换的钱，`extern "C"` 就是一次跳转**。所以 Go 版那句「桥很便宜，换语言不变快」需要更精确地
-说：桥的*地板*是 0.28 µs 还是 0.1 µs，取决于 FFI 那层有没有运行时；而像素数学的差别（477 → 361 µs）
-是算法写法（迭代器 vs 索引越界检查），不是语言的锅。
+### 真机实测（同一台设备、同一时段，两边各 5 次）
 
-**这些是单次读数，没有取中位数**。要当结论用，两边各跑 5 次再说。
+| 指标 | Go 中位数（范围） | Rust 中位数（范围） | 说明 |
+|---|---|---|---|
+| `int` 空往返 | 0.3 µs（0.3–0.3） | **0.1 µs**（0.1–0.2） | 稳。cgo 每次固定多付约 0.2 µs |
+| JSON 回串 | 3.1 µs（3.0–3.4） | **1.3 µs**（1.3–1.3） | 稳。差在 CString 分配 + 过桥那一跳 |
+| 300 KB 的像素数学 | 475 µs（471–476） | **362 µs**（361–363） | 稳。同一算法，Rust 快 24% |
+| 桥的拷贝部分（总−数学） | 118 µs（**71–205**） | 23 µs（**20–32**） | **两边都抖**，只能看方向 |
+| SQLite seed 20k | 59.3 ms | **12.3 ms** | 稳。C 的 SQLite vs 纯 Go 的 |
+| SQLite page 2k | 8.0 ms（store 6.07） | **5.5 ms（store 1.21）** | 稳 |
+| 产物 | 11 MB + 4 补丁 | **2.7 MB + 0 补丁** | 不含 SQLite 时 788 KB |
+
+怎么读这张表：
+
+- **别用「桥快 5 倍」这个说法**。300 KB 那一行是「总时间 − 核心自报的数学时间」算出来的差，
+  两边噪声都在 ±50%，5 次里 Go 从 71 跳到 205 µs。它只说明方向（Rust 的拷贝更便宜），
+  不说明倍数。
+- 真正稳、可引用的只有两行：空调用 **0.3 → 0.1 µs**、JSON 回串 **3.1 → 1.3 µs**。
+  原因是 cgo 一次调用要付运行时切换，`extern "C"` 只是一次跳转。
+- 像素数学 475 → 362 µs 和语言无关，和写法有关（同一个 BT.601 循环，两种索引风格）。
+- SQLite 那一行的赢家是 **C 实现**，不是 Rust；Go 版选纯 Go 驱动换来的是"零 C 依赖"。
 
 ## 六、搬过来的 UI 决策（原样保留）
 
@@ -185,6 +203,7 @@ UI 不刷新（读数会停在第一次的样本上）。所有随状态变化�
 Cargo.toml              workspace；default-members 只有 core（主机侧不碰桥）
 .cargo/config.toml      ohos target 的 linker（NDK 自带的 clang 包装器）+ cc 的 CC/AR
 rust/core/              纯 Rust，cargo test 在 Mac 上跑，不认识手机
+rust/store/             唯一编 C 的 crate（rusqlite bundled）；隔开就是为了上面那条
 rust/bridge/            cdylib；src/lib.rs 是桥，csrc/napi_ohos.c 是 NAPI 那一层
 platform/ohos/          build.sh（交叉编译）、run.sh（编 + 装 + 跑）
 scripts/check.sh        fmt、clippy、test、交叉编译，以及两条硬断言
@@ -197,5 +216,5 @@ app/                    ArkTS 外壳，从 go-ohos-kit 搬来并改名（不是�
 == cargo fmt ==      ok
 == cargo clippy ==   ok
 == cargo test ==     28 passed (core), 2 passed (bridge)
-== cross build ==    librustcore.so — 788K, 24 exports, 0 TPRELs
+== cross build ==    librustcore.so — 2.7M, 24 exports, 0 TPRELs
 ```

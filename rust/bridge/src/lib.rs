@@ -29,6 +29,7 @@ use rustkit_core::image;
 use rustkit_core::level::{Level, LevelReading};
 use rustkit_core::rows;
 use rustkit_core::todos::{List, Todo};
+use rustkit_store::Store;
 
 /// The accelerometer arrives at 50 Hz and the screen refreshes at 60: the
 /// bridge does not need to push every sample, so this is the interval the UI
@@ -49,6 +50,8 @@ struct Kernel {
     born: Instant,
     /// Turns the ticker off when the core stops.
     ticker: Arc<AtomicBool>,
+    /// The core's own SQLite file, once `dbOpen` has opened one.
+    db: Option<Store>,
 }
 
 static KERNEL: Mutex<Option<Kernel>> = Mutex::new(None);
@@ -219,6 +222,7 @@ pub unsafe extern "C" fn rustkit_start(files_dir: *const c_char) {
             last_level_push: Instant::now(),
             born,
             ticker,
+            db: None,
         });
     }
     // Push the first list before anyone can ask for it: an event with nobody
@@ -445,45 +449,123 @@ pub extern "C" fn rustkit_rows_json(offset: i32, limit: i32) -> *mut c_char {
 
 // ------------------------------------------------------------ the database
 //
-// Not ported yet, and answering with a reason instead of a crash: the panel that
-// shows it is the one place where Rust costs more than Go did. `rusqlite` needs a
-// C compiler for the target (doable, and the toolchain is configured), while Go
-// had a pure-Go SQLite and could keep the core dependency-free. See CONTEXT.md.
+// The queries live in `rustkit-store`; this file only measures them and moves
+// their answer across. `micros` is the store's own clock, so the UI can subtract
+// it from the round trip and see what the bridge cost — the same split the Go
+// version reports.
 
-const DB_NOT_PORTED: &str = "not ported yet: the database is the next step (see CONTEXT.md)";
+fn db_missing() -> String {
+    json_error("no database: dbOpen was not called")
+}
 
+fn store_of(kernel: &mut Kernel) -> Option<&Store> {
+    kernel.db.as_ref()
+}
+
+/// Opens (or creates) the core's own SQLite file under `files_dir`.
+///
+/// # Safety
+///
+/// `files_dir` must be a NUL-terminated string, or null.
 #[no_mangle]
-pub extern "C" fn rustkit_db_open(_files_dir: *const c_char) -> *mut c_char {
-    out(serde_json::json!({ "ok": false, "path": "", "error": DB_NOT_PORTED }).to_string())
+pub unsafe extern "C" fn rustkit_db_open(files_dir: *const c_char) -> *mut c_char {
+    let dir = text_of(files_dir);
+    if dir.is_empty() {
+        return out(json_error("no files dir"));
+    }
+    let path = Path::new(&dir).join("rustkit.db");
+    match Store::open(&path) {
+        Ok(store) => {
+            let where_it_is = store.path().display().to_string();
+            if let Some(inserted) = with_kernel(|k| k.db.replace(store)) {
+                drop(inserted); // a second open replaces the first, and closes it
+            }
+            out(serde_json::json!({ "ok": true, "path": where_it_is }).to_string())
+        }
+        Err(err) => out(serde_json::json!({
+            "ok": false, "path": "", "error": err.to_string(),
+        })
+        .to_string()),
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn rustkit_db_seed(_count: i32) -> *mut c_char {
-    out(serde_json::json!({
-        "ok": false, "op": "seed", "rows": 0, "micros": 0, "error": DB_NOT_PORTED,
-    })
-    .to_string())
+pub extern "C" fn rustkit_db_seed(count: i32) -> *mut c_char {
+    let timed = with_kernel(|kernel| {
+        store_of(kernel).map(|store| {
+            let started = Instant::now();
+            let result = store.seed(count);
+            (result, started.elapsed().as_micros() as i64)
+        })
+    });
+    match timed {
+        Some(Some((result, micros))) => match result {
+            Ok(rows) => out(serde_json::json!({
+                "ok": true, "op": "seed", "rows": rows, "micros": micros,
+            })
+            .to_string()),
+            Err(err) => out(serde_json::json!({
+                "ok": false, "op": "seed", "rows": 0, "micros": micros, "error": err.to_string(),
+            })
+            .to_string()),
+        },
+        _ => out(db_missing()),
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn rustkit_db_page(_offset: i32, _limit: i32) -> *mut c_char {
-    out(serde_json::json!({
-        "ok": false, "rows": [], "count": 0, "micros": 0, "error": DB_NOT_PORTED,
-    })
-    .to_string())
+pub extern "C" fn rustkit_db_page(offset: i32, limit: i32) -> *mut c_char {
+    let timed = with_kernel(|kernel| {
+        store_of(kernel).map(|store| {
+            let started = Instant::now();
+            let result = store.page(offset, limit);
+            (result, started.elapsed().as_micros() as i64)
+        })
+    });
+    match timed {
+        Some(Some((result, micros))) => match result {
+            Ok(rows) => out(serde_json::json!({
+                "ok": true, "rows": rows, "count": rows.len(), "micros": micros,
+            })
+            .to_string()),
+            Err(err) => out(serde_json::json!({
+                "ok": false, "rows": [], "count": 0, "micros": micros, "error": err.to_string(),
+            })
+            .to_string()),
+        },
+        _ => out(db_missing()),
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn rustkit_db_count() -> i32 {
-    0
+    with_kernel(|kernel| kernel.db.as_ref().and_then(|store| store.count().ok()))
+        .flatten()
+        .unwrap_or(0)
 }
 
 #[no_mangle]
 pub extern "C" fn rustkit_db_reset() -> *mut c_char {
-    out(serde_json::json!({
-        "ok": false, "op": "reset", "rows": 0, "micros": 0, "error": DB_NOT_PORTED,
-    })
-    .to_string())
+    let timed = with_kernel(|kernel| {
+        store_of(kernel).map(|store| {
+            let started = Instant::now();
+            let result = store.reset();
+            (result, started.elapsed().as_micros() as i64)
+        })
+    });
+    match timed {
+        Some(Some((result, micros))) => match result {
+            Ok(()) => out(serde_json::json!({
+                "ok": true, "op": "reset", "rows": 0, "micros": micros,
+            })
+            .to_string()),
+            Err(err) => out(serde_json::json!({
+                "ok": false, "op": "reset", "rows": 0, "micros": micros, "error": err.to_string(),
+            })
+            .to_string()),
+        },
+        _ => out(db_missing()),
+    }
 }
 
 #[cfg(test)]

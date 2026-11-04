@@ -2,6 +2,10 @@
 
 **同一个问题，换一种语言问：把 HarmonyOS 应用的逻辑放进 Rust，要付多少代价。**
 
+> 这个仓库是**实验组**。对照组是 [`../go-ohos-kit`](../go-ohos-kit)：同一个 ArkTS 外壳、同样的八块
+> 面板，内核是 Go，代价是 4 个 runtime 补丁 + 11 MB 产物。两边的补丁逐条对照、桥读数、体积在
+> [`CONTEXT.md`](CONTEXT.md)。
+
 对照实验。`../go-ohos-kit` 已经用 Go 回答过一遍：Go 内核 + ArkTS 宿主，真机跑通，
 代价是 **4 个 Go runtime 补丁**（改 GOROOT、用 `-overlay` 维护）、一份 11 MB 的 `.so`，
 以及一套「每次升级 Go 都要重跑锚点检查」的负担。
@@ -16,9 +20,11 @@
 | 产物大小 | 11 MB | **772 KB** |
 | `TLS_TPREL64` 重定位 | 必须是 0（补丁就是为了它） | **本来就是 0** |
 | 内核能否脱离设备测试 | 能（`go test ./core/`） | 能（`cargo test -p rustkit-core`） |
-| 数据库 | `modernc.org/sqlite`（纯 Go，守住"纯内核"） | **没有对等物** ← 唯一更贵的地方 |
-| 桥的往返（空调用） | 0.28 µs | **0.1 µs** |
-| 300 KB 过桥 | 566 µs（桥占 89） | **383 µs（桥占 22）** |
+| 数据库 | `modernc.org/sqlite`（纯 Go） | `rusqlite` + bundled（**编 C**，交叉编译 20 s） |
+| SQLite 20k 行 seed | 60.2 ms | **12.3 ms** |
+| 桥的往返（空调用，5 次） | 0.3 µs（0.3–0.3） | **0.1 µs**（0.1–0.2） |
+| JSON 回串（5 次） | 3.1 µs | **1.3 µs** |
+| 像素数学（5 次） | 475 µs | **362 µs** |
 
 ## 为什么它更省事
 
@@ -61,10 +67,20 @@ ArkTS 外壳已经搬过来（`app/`，改名 `librustcore` / `RustCore.ts` / �
 `hvigorw assembleHap` 通过。
 
 **真机跑通了**：`cn.isfk.rustkit` 在设备上装着，八个面板都是 Rust 在供数据。
-桥的数字比 Go 版低一档（0.1 µs vs 0.28 µs），原因不是"Rust 更快"，是 **cgo 一次调用要付运行时
-切换的钱，`extern "C"` 只是一次跳转** —— 详见 [`CONTEXT.md`](CONTEXT.md) 第 3 节末尾。
+空调用 **0.3 µs → 0.1 µs**、JSON 回串 **3.1 → 1.3 µs**（两边各 5 次，5/5 一致）。原因不是
+"Rust 更快"，是 **cgo 每次调用要付运行时切换，`extern "C"` 只是一次跳转**。
+更细的读数（含哪些数字噪声大、不该引用）在 [`CONTEXT.md`](CONTEXT.md) 第 3 节末尾。
 
-**还差**：SQLite（`db*` 现在返回一句"没移植"的理由，面板会如实显示出来）。
+数据库也做了，而且结论和预想相反：`rusqlite` 的 bundled C 交叉编译到
+`aarch64-unknown-linux-ohos` 只要 20 秒，跑起来 20k 行 seed **12.3 ms**（Go 的纯 Go 驱动 60.2 ms）。
+代价不是"做不到"，是**纯不了**：`rust/core` 之外多出 `rust/store` 一个 crate，C 只从那里进来。
+`.so` 也因此从 788 KB 长到 2.7 MB —— 仍比 Go 版的 11 MB 小 4 倍。
+
+**八块面板、桥读数（各 5 次）、SQLite、相机预览、暗色主题都验过了。**
+
+剩下的不是"还没做"，是"有意不做"：除了 SQLite 那一条，其余全部与 Go 版同构 ——
+`scripts/check.sh` 现在还会断言两份 `color.json` 的 token 名集合一致（缺一个在暗色下会解析成
+空，只在设备上现形）。
 
 ## 命令
 

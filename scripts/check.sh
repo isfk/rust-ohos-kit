@@ -21,7 +21,28 @@ echo "== cargo test =="
 # The core only. The bridge is a `cdylib` that exists to be dlopen'd by
 # HarmonyOS: its own tests are the three that do not need a phone attached.
 cargo test -p rustkit-core
+# The database is not part of the core — a C library lives in here — but it is
+# still testable on a laptop: that is what keeping it in its own crate buys.
+cargo test -p rustkit-store
 cargo test -p rustkit-bridge --lib
+
+echo "== colour ramps =="
+# Every token the light theme declares, the dark one has to declare too: a name
+# that exists in only one of them resolves to nothing on the other theme, which
+# shows up as a black or transparent panel on a device — never on a Mac.
+light=app/entry/src/main/resources/base/element/color.json
+dark=app/entry/src/main/resources/dark/element/color.json
+if [ -f "$light" ] && [ -f "$dark" ]; then
+	names() { grep -o '"name": *"[^"]*"' "$1" | sed 's/.*"\(.*\)"/\1/' | sort; }
+	missing=$(comm -23 "$(names "$light" | tr '\n' ' ' | tr ' ' '\n')" "$(names "$dark" | tr '\n' ' ' | tr ' ' '\n')" | tr -d ' ')
+	if [ -n "$missing" ]; then
+		echo "dark colour is missing: $missing" >&2
+		exit 1
+	fi
+	echo "both ramps declare $(names "$light" | wc -l | tr -d ' ') tokens"
+else
+	echo "no app colours to compare (app not carried over)" >&2
+fi
 
 if [ "$build" = yes ]; then
 	echo "== cross build: aarch64-unknown-linux-ohos =="

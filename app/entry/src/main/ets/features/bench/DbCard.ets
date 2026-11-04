@@ -41,7 +41,7 @@ export struct DbCard {
 
   aboutToAppear(): void {
     const opened = rustcore.dbOpen(getContext(this).filesDir);
-    this.status = opened.ok ? 'Go file ready' : `open failed: ${opened.error ?? 'unknown'}`;
+    this.status = opened.ok ? 'Rust file ready' : `open failed: ${opened.error ?? 'unknown'}`;
     this.refreshCount();
   }
 

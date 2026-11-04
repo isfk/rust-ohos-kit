@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustkit-core = { path = "../core" }
+rustkit-store = { version = "0.1.0", path = "../store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

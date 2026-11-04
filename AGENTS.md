@@ -21,8 +21,10 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
    `filesDir`。它要能在 Mac 上 `cargo test` 跑通 —— 这是唯一不用设备就能验证的那部分。
    路径、句柄一律从 ArkTS 传进来（参数或 `&[u8]` / `fd`）。
 
-   这一条在 Go 版里靠 `modernc.org/sqlite`（纯 Go）才守得住；Rust 没有对等物，
-   所以**加 SQLite 之前先读 `CONTEXT.md` 第 5.3 节**，别默认 `rusqlite::bundled` 就等于纯 Rust。
+   数据库放在 **`rust/store`**，不在 `rust/core`：`rusqlite` 的 `bundled` 会把 SQLite 的 C
+   编进产物，那是"不纯"的唯一边界。关在一个独立 crate 里，core 就还能保持无 FFI。
+   这和 Go 那边把 SQLite 关进 `go/store` 是同一个动作。`cargo test -p rustkit-store`
+   仍然能在 Mac 上跑（bundled 对宿主平台一样能编）。
 
 2. **平台的东西留在平台侧**：解码（HEIF/JPEG 归系统解码器）、权限、surface、Kit 全在 ArkTS；
    内核只收已经规整的数据（RGBA 字节、fd、JSON）。**别在内核里塞 `image` crate 去解相机照片** ——
@@ -46,6 +48,7 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 | 想做什么 | 命令 | 要设备？ |
 |---|---|---|
 | 内核逻辑 | `cargo test -p rustkit-core` | 不要 |
+| 数据库逻辑 | `cargo test -p rustkit-store` | 不要 |
 | 全套自检 | `scripts/check.sh` | 不要 |
 | 无 SDK 机器 | `scripts/check.sh --no-build` | 不要 |
 | 只编 `.so` | `platform/ohos/build.sh` | 不要 |
@@ -66,8 +69,9 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 
 - **截图是证据，但要看清**：`hdc shell snapshot_display -f /data/local/tmp/x.jpeg` +
   `hdc file recv`。别凭想象描述画面。
-- **`snapshot_display` 抓不到 XComponent 的 SURFACE 层**：相机预览在截图里是黑的，
-  这不能当成"预览坏了"，要看状态行（`1280×720 preview`）和按钮状态。
+- **相机预览在 `snapshot_display` 里能抓到**（本机实测：截图里是真实画面）。所以"黑方块"
+  就是真的黑（镜头对着暗处或挡住），不能当成截图限制来解释 —— 先看状态行（`1280×720`）和
+  按钮是否变成 Stop，再看画面。
 - **别用自动化工具替用户验手势**：`uitest uiInput drag/swipe` 对拖拽/捏合测不准。
 - **判断错了要改口**：先复现、再归因。怀疑某个 bug 之后要用实验把两种可能分开，
   不能把"我看到的顺序"当因果。
@@ -111,8 +115,11 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
   全是 Go runtime 自己的债，逐条对照见 `CONTEXT.md` 第二节。
 - ~~「换个语言能变快」~~：Go 版已经测过，桥的往返 0.28 µs，换语言改不了这个数字。
   **这里该比的是体积、启动成本、维护面**，不是"Rust 比 Go 快"。
-- ~~「纯 Rust 的 SQLite 和 modernc 一样省事」~~：没有对等物。这是 Rust 侧最贵的一笔，
-  别在没做决定前先写代码。
+- ~~「Rust 上 SQLite 做不了/更贵」~~：**已证伪**。`rusqlite` + `bundled` 交叉编译到
+  `aarch64-unknown-linux-ohos` 20 秒通过，20k 行 seed 12.3 ms（Go 的纯 Go 驱动 60.2 ms）。
+  代价是纯度（C 进了产物、`.so` 从 788 KB 到 2.7 MB），不是能力。
+- ~~「rusqlite 就是纯 Rust」~~：不是。`bundled` 会把 SQLite 的 C 编进 `.so`，所以它只能待在
+  `rust/store`，不能进 `rust/core`。
 
 ## 别提交、别碰
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["rust/core", "rust/bridge"]
+members = ["rust/core", "rust/store", "rust/bridge"]
 # Host-side work is the core only: `cargo test` on a Mac must not need a phone,
 # an NDK, or the bridge. The bridge is built for the OHOS target by name.
 default-members = ["rust/core"]
