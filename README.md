@@ -6,6 +6,8 @@
 > 同一个 ArkTS 外壳、同样的八块面板，内核是 Go：**4 个 runtime 补丁**，产物 11 MB（这里 2.7 MB）。
 > 那边用纯 Go 的 SQLite、内核零 C 依赖，代价是同样的 20k 行 seed 59.3 ms（这里 12.3 ms）——
 > 它买到的是"不用编 C"这件事本身。补丁逐条对照、桥读数、体积表见[本仓库的 CONTEXT.md](CONTEXT.md)。
+>
+> 语言、生态、踩过的坑、什么时候选哪个：[**Go vs Rust，在 HarmonyOS 上**](docs/go-vs-rust.md)。
 
 Go 那份的代价不止补丁：GOROOT 靠 `-overlay` 维护，每升级一次 Go 都要重跑锚点检查。
 这个仓库把那层内核换成 Rust，问的是一个具体问题：**那些债还要不要还。**

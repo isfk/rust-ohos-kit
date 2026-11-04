@@ -44,6 +44,24 @@ else
 	echo "no app colours to compare (app not carried over)" >&2
 fi
 
+echo "== shared conclusions page =="
+# docs/go-vs-rust.md exists in both repositories, on purpose: each one has to read
+# correctly on its own. Two copies drift, so this compares them when the sibling
+# checkout happens to be next to this one — and says so instead of pretending to
+# have checked when it is not.
+sibling=../go-ohos-kit/docs/go-vs-rust.md
+mine=docs/go-vs-rust.md
+if [ -f "$sibling" ]; then
+	if ! cmp -s "$mine" "$sibling"; then
+		echo "docs/go-vs-rust.md differs from $sibling — change both, or neither" >&2
+		diff "$mine" "$sibling" | head -20 >&2
+		exit 1
+	fi
+	echo "identical to the sibling's copy"
+else
+	echo "no sibling checkout: skipped"
+fi
+
 if [ "$build" = yes ]; then
 	echo "== cross build: aarch64-unknown-linux-ohos =="
 	so=$(./platform/ohos/build.sh 2>/dev/null | tail -1)
