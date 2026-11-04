@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { appLife } from '../state/AppLife';
+import { setBenchRuns } from '../core/bench';
 
 const DOMAIN = 0x0000;
 
@@ -24,6 +25,16 @@ export default class EntryAbility extends UIAbility {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
+    }
+
+    // `aa start --pi bench N` asks for measurements without a finger on the
+    // button (see ../../scripts/bench.sh). Anything else leaves it at zero.
+    const params = want.parameters;
+    if (params !== undefined) {
+      const raw = params['bench'];
+      if (typeof raw === 'number') {
+        setBenchRuns(raw as number);
+      }
     }
   }
 

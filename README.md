@@ -23,18 +23,19 @@ Go 那份的代价不止补丁：GOROOT 靠 `-overlay` 维护，每升级一次 
 | 数据库 | `modernc.org/sqlite`（纯 Go，零 C） | `rusqlite` + bundled（**编 C**，交叉编译 20 s） |
 | SQLite 20k 行 seed | 59.3 ms | **12.3 ms** |
 | `remaining()` int 回传 | 0.3 µs | **0.1 µs** |
-| `todos()` JSON 回串 | 3.1 µs | **1.3 µs** |
-| 300 KB 像素数学 | 475 µs | **362 µs** |
+| `todos()` JSON 回串 | 1.5–1.7 µs | **1.3 µs** |
+| 300 KB 像素数学 | 494 µs（473–590） | **370 µs**（369–390） |
 
 **这些数字怎么读**（两边都适用，也是唯一诚实的读法）：
 
 - 同一台设备、同一时段、两个 app 各跑 **5 次**取中位数。上面的 Go 侧读数是当场重测的，不是
   `../go-ohos-kit` README 里存的那组。
-- 绝对读数**跨会话会漂**：同一个 `todos()` 调用，那份 README 记的是 1.5–1.7 µs（早先 4 次采样），
-  今天同一份 build 读到 3.0–3.4 µs。int 和 300 KB 那两行两边吻合，JSON 那行差了 2 倍 ——
-  所以**能引用的只有同一次会话里的比值**，别跨文档拼数字。
-- 300 KB 那一行的「桥份额」是总时间减去核心自报的数学时间，两边噪声都在 ±50%
-  （Go 5 次里从 71 跳到 205 µs），只能当量级看，`go` 那份 README 也是这么标注的。
+- 绝对读数**跨会话会漂**：同一个 `todos()` 调用，一天里读过 3.0–3.4 µs，也读过 1.5–1.7 µs
+  （同一个 build）。现在有了 `platform/ohos/bench.sh`（`aa start --pi bench N`，不点按钮），
+  一次会话内的 5 轮才算可引用 —— 是它而不是截图，把上面这些数字钉住的。
+- 300 KB 那一行的「桥份额」是总时间减去核心自报的数学时间，两个大数相减的小残差，比任何
+  一项本身都抖：5 次里 Go 在 71.6–205 µs 之间（0.61×–1.74× 中位），Rust 在 20.2–32.4。
+  **倍数不可引用**，方向可以 —— 两个区间不重叠（Rust 最差 32.4 < Go 最好 71.6）。
 
 ## 为什么它更省事
 
@@ -92,10 +93,11 @@ Rust 内核           rust/core（纯 Rust）+ rust/store（唯一编 C 的 crat
 ## 命令
 
 ```sh
-scripts/check.sh              # fmt + clippy + 测试 + 交叉编译 + 五条断言
+scripts/check.sh              # fmt + clippy + 测试 + 交叉编译 + 五条断言 + 文档一致性
 scripts/check.sh --no-build   # 没有 SDK 的机器
 platform/ohos/build.sh        # 只编 librustcore.so，并放进 app/entry/libs
 platform/ohos/run.sh          # 编 + 装 + 跑（要设备 + 一次 DevEco 签名）
+platform/ohos/bench.sh 5      # 桥的读数：不点按钮，5 轮 + 中位数表
 ```
 
 `check.sh` 的五条断言盯的都是**只在设备上现形**的失败：产物无 `TLS_TPREL64`、
@@ -109,6 +111,7 @@ platform/ohos/run.sh          # 编 + 装 + 跑（要设备 + 一次 DevEco 签�
 == cargo clippy ==    ok
 == cargo test ==      28 core + 4 store + 2 bridge
 == colour ramps ==    both ramps declare 15 tokens
+== conclusions page == identical to the sibling's copy
 == cross build ==     librustcore.so — 2.7M, 24 exports, 0 TPRELs
 ```
 

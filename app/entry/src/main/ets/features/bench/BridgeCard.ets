@@ -13,6 +13,7 @@
 
 import { systemDateTime } from '@kit.BasicServicesKit';
 import { rustcore } from '../../core/RustCore';
+import { benchRuns } from '../../core/bench';
 
 @ComponentV2
 export struct BridgeCard {
@@ -20,6 +21,18 @@ export struct BridgeCard {
   @Local private jsonLine: string = '';
   @Local private pixelsLine: string = '';
   @Local private note: string = '';
+
+  aboutToAppear(): void {
+    // Without a person: the app was started with `--pi bench N`, so run N rounds
+    // back to back. Each round already logs itself (see run()), which is what
+    // scripts/bench.sh reads — the numbers come out of the log, not off a
+    // screenshot. It does block the first frame for a few hundred milliseconds,
+    // which is fine for a bench and unacceptable for anything else.
+    const runs = benchRuns();
+    for (let i = 0; i < runs; i++) {
+      this.run();
+    }
+  }
 
   /** Nanoseconds since boot: Date.now() is far too coarse for one call. */
   private nowNs(): number {
