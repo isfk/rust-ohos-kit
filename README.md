@@ -90,7 +90,9 @@ Rust 内核           rust/core（纯 Rust）+ rust/store（唯一编 C 的 crat
 `cn.isfk.rustkit` 在设备上装着，八块面板全是 Rust 在供数据：
 
 - 水准仪 50 samples/s，气泡随手机倾斜移动；定位读数随 fix 刷新
-- 照片分析：8×8 光照网格 + 直方图 + 调色板，`2.2 ms in Rust`
+- 照片分析：8×8 光照网格 + 直方图 + 调色板，`2.2 ms in Rust`（**单次读数**：这张卡显示的是
+  一次调用的核内时钟，会随设备状态飘 —— 同一张同尺寸照片另一轮读到过 `0.4 ms`。引用数字
+  请看 `platform/ohos/bench.sh` 那行的中位数）
 - 线格式：JSON 173 KB / 2.9 ms 对比紧凑格式 120 KB / 2.9 ms，光过桥 0.2 ms
 - SQLite：seed 20k 12.3 ms（store 12.2）· page 2k 5.5 ms（store 1.21），平台 `relationalStore` 对照 262.5 / 9.2 ms
 - 相机预览出画面（`1280×720`）、暗色主题两边的观感一致

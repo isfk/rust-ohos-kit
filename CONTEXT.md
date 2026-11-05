@@ -179,7 +179,8 @@ Go 基线（`go-ohos-kit` 的 BridgeCard，真机）：`int` 往返 **0.28 µs**
 
 装机跑通，证据在 `.cache/rust-2.jpeg`（首屏）、`rust-3.jpeg`（干净初始态）、
 `wire2.png`（桥的读数）、`db.png`（SQLite 那句自曝缺口）。八个面板都在，水准仪 49 samples/s、
-照片 `2.2 ms in Rust`、心跳在跑 —— 这些都是 Rust 推过来的。
+照片 `2.2 ms in Rust`、心跳在跑 —— 这些都是 Rust 推过来的。（照片那格是单次读数，不是 bench
+中位数：同一尺寸另一轮读到过 0.4 ms，引数字别看它。）
 
 相机预览**已在真机上看到画面**（`.cache/cam-2.jpeg`，对着键盘）：截图能抓到 SURFACE 层，
 所以之前"截图抓不到"的说法是错的，已从 AGENTS.md 改掉。
