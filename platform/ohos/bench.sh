@@ -27,6 +27,10 @@ tag=rustkit-bench
 
 echo "bench: $bundle, $runs rounds" >&2
 "$hdc" shell aa force-stop "$bundle" >/dev/null 2>&1 || true
+# Empty the ring buffer first. Without this the wait loop below counts lines that
+# a *previous* run left behind, breaks after one second, and `tail -n runs` then
+# reports last session's numbers as if they were this one's.
+"$hdc" shell hilog -r >/dev/null 2>&1 || true
 "$hdc" shell aa start -a EntryAbility -b "$bundle" --pi bench "$runs" >/dev/null
 
 # Wait for the rounds to appear instead of sleeping a guessed number of seconds.

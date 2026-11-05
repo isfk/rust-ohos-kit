@@ -23,5 +23,10 @@ app/entry/.preview/
 # Session evidence (screenshots, commit drafts) — never shipped.
 .cache/
 
+# platform/ohos/new.sh puts a scaffolded project here by default. It is a complete
+# workspace of its own (with its own .gitignore); it is not part of this one, and
+# without this line it arrives in `git status` as a thousand untracked files.
+apps/
+
 # macOS
 .DS_Store

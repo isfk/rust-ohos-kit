@@ -1,0 +1,33 @@
+# The same gate the sibling repo runs: everything a machine without a phone can
+# prove. The cross build needs the HarmonyOS NDK, which a plain runner does not
+# have — `check.sh` says so and skips it, rather than pretending to have checked.
+#
+# What this cannot cover: the two device-only failure modes (a dropped C glue,
+# an unlinked NAPI runtime) are asserted against the cross-built `.so`, so they
+# stay in the local `scripts/check.sh` run. That is a gap in CI, not in the
+# assertions; it is written down so nobody reads a green tick as more than it is.
+name: check
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # rustfmt and clippy are what the gate is made of, so they are not optional
+      # components here.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # rust/store compiles SQLite's C: a cache keyed on the lockfile keeps the
+      # run to seconds instead of rebuilding 1.9 MB of C every push.
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt, clippy, tests, colour ramps, NAPI surface
+        run: scripts/check.sh --no-build
