@@ -32,11 +32,12 @@ Go 版 `scripts/check.sh` 里那条硬断言（产物 `TLS_TPREL64` 重定位计
 
 ```text
 scripts/check.sh
-  cargo fmt --check                          ✅
-  cargo clippy --all-targets -- -D warnings  ✅
-  cargo test -p rustkit-core                  ✅ 24 passed
-  cargo test -p rustkit-bridge --lib           ✅ 2 passed
-  cross build aarch64-unknown-linux-ohos       ✅ 772K, 15 exports, 0 TPREL
+  cargo fmt --check                            ✅
+  cargo clippy --workspace --all-targets …     ✅ 三个 crate 都过
+  cargo test -p rustkit-core                   ✅ 28 passed
+  cargo test -p rustkit-store                  ✅ 4 passed
+  cargo test -p rustkit-bridge --lib           ✅ 7 passed
+  cross build aarch64-unknown-linux-ohos       ✅ 2.7M, 24 exports, 0 TPREL
 ```
 
 移植的四个模块，测试用例是从 `go/core/*_test.go` 一条条搬过来的（同一个像素、同一个
@@ -60,7 +61,7 @@ C 侧的 threadsafe function。`csrc/napi_ohos.c` 基本是 Go 版那个文件�
 调 Rust），链接器看不到任何需要它的符号，就一个成员都不拉 —— 连
 `__attribute__((constructor))` 里的模块注册也一起消失。
 
-表现是静默的：`.so` 编出来了、15 个 `rustkit_*` 都在、`file` 说它是 AArch64 共享库，**但
+表现是静默的：`.so` 编出来了、`rustkit_*` 导出全在、`file` 说它是 AArch64 共享库，**但
 ArkTS 导入的是一个没有任何函数的模块**。
 
 解法：`build.rs` 用 `compile_intermediates()` 拿 `.o` 直接交给链接器（不做归档语义），并且
@@ -93,6 +94,21 @@ llvm-nm -D -u librustcore.so | grep napi   # 空 = C 胶水没进去
 `libgocore → librustcore`、`GoCore.ts → RustCore.ts`（`gocore → rustcore`）、
 `cn.isfk.gokit → cn.isfk.rustkit`、`gokit-bench → rustkit-bench`（日志 tag）、
 注释里的 "Go core / goroutine" 一并改口。
+
+**它一度不只是一次改名，现在又回到了一次改名。** 搬完之后这一侧先多了几处对照组没有的
+修正：`RustCore.ts` 的 `mutatedTodos`（存档失败就抛，而不是把错误当空列表）、`Index.ets` 的
+`todoError` 横幅、`TodoComposer` 的 `onAdd: () => boolean`（存不进就不清输入框）、
+`DbCard` 的状态行 `layoutWeight/maxLines`。两边的 ArkTS 因此**一度不是逐字同一套**。
+
+这些**已经回填给 `go-ohos-kit`**（四个文件，改名之外逐字相同），这也是回填时抓到一个真 bug 的
+经过：Go 核的列表事件用了 `json:"todos,omitempty"`，于是"删掉最后一行"发出去的是
+`{"kind":"todos"}`，严格校验把它读成失败 —— 真机上表现为删掉了行、却弹一行红字。
+修法在线上格式而不是校验：`core.go` 的 `todosJSON()` 永远带 `todos` 字段（nil 也要先规范成
+`[]`，否则是 `null`），并加了一条钉死这个形状的用例。Rust 侧本来就一直发空数组，两个内核
+现在在线上格式上一致。
+
+两个 `scripts/check.sh` 现在都会拿兄弟仓库的这四个文件对峙（归一化掉 `rustcore`/`gocore`
+和语言名之后逐字节比）：漂了就直接失败。**改外壳只改一边**这件事，从口头约定变成了断言。
 
 `hvigorw assembleHap` **BUILD SUCCESSFUL**，产物 `entry-default-unsigned.hap`（946 KB）。
 
@@ -135,14 +151,31 @@ u16 len / title`，桥侧 `rows(offset, limit) -> ArrayBuffer` + `rowsJson`。
 
 界面上那句自曝缺口的文案已经没了：现在这里显示 `Rust file ready` 和真读数。
 
-### 4. 桥的 bench — 这是本仓库还没给出的那个数字
+**清单也搬进这个文件了**（`filesDir/rustkit.db`，`todos` 表），和 Go 那边把清单从
+`todos.json` 搬进 `gokit.db` 是同一个动作，连迁移的规矤也一样：只在表为空时导入、
+导入后把 `todos.json` 改名为 `todos.json.imported`（改名而不是删除 —— 那是唯一的另一份拷贝）。
+之前 "SQLite 已完成" 只对对比卡片成立，清单还在写 JSON —— 两份 app 干的活不一样。
+现在一致了：一次增/改/删 = 一个事务，`stop()` 不再需要写盘。
+
+### 4. 日志 — **已补齐**（Go 有、Rust 一开始没有的那一件）
+
+Go 那边 `go/log_linux.c` 用一个构造函数把 fd 1/2 接进 pipe，再由 C 线程写 hilog，所以
+它的 `fmt.Println` 和 panic traceback 都看得见。Rust 版一开始没有对应物，于是 `eprintln!`
+和 panic 一起掉进真空 —— 而 AGENTS.md 又让人用 `hilog -T rustkit` 排错。
+现在有了 `rust/bridge/csrc/log_ohos.c`（原文搬过来）。`build.rs` 按 `target_env = "ohos"`
+定义 `RUSTKIT_WITH_HILOG`，宿主侧那个文件编成空，`cargo test` 仍然不需要 NDK。
+`check.sh` 断言产物里引用 `dup2`：这个对象跟 C 胶水一样，被丢掉时是静默的。
+
+### 5. 桥的 bench — **已完成**（而且换过测法）
 
 Go 基线（`go-ohos-kit` 的 BridgeCard，真机）：`int` 往返 **0.28 µs**，120 KB 过桥 0.3 ms。
-要在 Rust 侧得到同一个数字，需要一个不编进 app 的 bench：直接 `dlopen` 两次、调一个空函数
-十万次，或者挂到 app 的 BridgeCard 上跑一遍。**别拿同一个函数在同一个进程里循环测**，那测的是
-函数调用不是过桥。
+最初的想法是「不编进 app 的 bench：直接 `dlopen` 两次、调一个空函数十万次」，但那样测的是
+函数调用，不是过桥 —— **别拿同一个函数在同一个进程里循环测**。
+最后走的是挂到 app 的 BridgeCard 上跑：`platform/ohos/bench.sh N` 用
+`aa start --pi bench N` 让 app 自己在 `aboutToAppear` 里跑 N 轮，数字只从 hilog 取 ——
+不点按钮、不靠截图、不依赖布局。上面那张表就是从它出来的。
 
-### 5. 真机 — **已完成**
+### 6. 真机 — **已完成**
 
 装机跑通，证据在 `.cache/rust-2.jpeg`（首屏）、`rust-3.jpeg`（干净初始态）、
 `wire2.png`（桥的读数）、`db.png`（SQLite 那句自曝缺口）。八个面板都在，水准仪 49 samples/s、
@@ -156,6 +189,36 @@ Go 基线（`go-ohos-kit` 的 BridgeCard，真机）：`int` 往返 **0.28 µs**
 
 `scripts/check.sh` 里那条「两份 color.json 的 token 名集合必须一致」的检查留着：它挡的是
 "只在一个主题里定义了某个 token" 这类只在设备上现形的错，和人看没看过无关。
+
+### 6.1 清单入库 + 日志管道（2026-11-05，HBN-AL00 真机，`hdc` 直连）
+
+截图在 `.cache/verify/`，每一步都是 `snapshot_display` + `file recv`，不是记忆：
+
+| 证据 | 说明 |
+|---|---|
+| `01-launch.jpeg` | 首屏，`Todos` 空，水准仪 50 samples/s，uptime 在涨 |
+| `02-after-add.jpeg` | 用 `uitest uiInput click/inputText` 敲进一行 → `1 of 1 left` |
+| `03-after-restart.jpeg` | `aa force-stop` + `aa start` 后同一行还在，uptime 4s（新进程） |
+| `10-go-delete-fixed2.jpeg` / `12-rust-delete2.jpeg` | 回填后的 Go / Rust 两侧：删掉最后一行 → `empty`，**没有**红色错误横幅 |
+
+日志管道（这一条只有设备能证明）：
+
+```text
+11-05 11:24:29.214  23991 23991 I A00000/cn.isfk.rustkit/rustkit: started
+11-05 11:24:29.215  23991 24105 W A00000/cn.isfk.rustkit/rustkit: rustkit: /data/storage/el2/base/haps/entry/files/rustkit.db (0 todos)
+```
+
+第二行的 **tid 24105 ≠ pid 23991**，就是那个 C 读线程 —— 说明这条是 `eprintln!` 经 fd 2
+进 pipe、再由 C 线程写 hilog 的；加这根管之前它是黑洞。重启后同一行变成 `(1 todos)`，
+清单真的在 `rustkit.db` 里。
+
+`platform/ohos/bench.sh 3` 一次跑通（`hilog -r` 之后只有本轮那三行，不再混上一次的）：
+
+```text
+int back 0.1 · JSON back 2.3 · pixel maths 391.0 · bridge copy 14.2（µs，中位数）
+```
+
+JSON 回串这次读到 2.3 µs（记账的 1.3 是另一次会话）—— 跨会话漂移，README 已经写明。
 
 ### 真机实测（同一台设备、同一时段，两边各 5 次）
 
@@ -176,9 +239,9 @@ Go 基线（`go-ohos-kit` 的 BridgeCard，真机）：`int` 往返 **0.28 µs**
   这不是"噪声大"，是**这个方法分辨不出来**；想量就换成不靠减法的测法。
 - 「一次会话内才可比」现在有工具保证：`platform/ohos/bench.sh N` 用
   `aa start --pi bench N` 让 app 自己跑 N 轮、只从 hilog 取数，一次命令就出中位数表。
-- 真正稳、可引用的只有两行：空调用 **0.3 → 0.1 µs**、JSON 回串 **3.1 → 1.3 µs**。
+- 真正稳、可引用的只有两行：空调用 **0.3 → 0.1 µs**、JSON 回串 **1.5–1.7 → 1.3 µs**。
   原因是 cgo 一次调用要付运行时切换，`extern "C"` 只是一次跳转。
-- 像素数学 475 → 362 µs 和语言无关，和写法有关（同一个 BT.601 循环，两种索引风格）。
+- 像素数学 494 → 370 µs 和语言无关，和写法有关（同一个 BT.601 循环，两种索引风格）。
 - SQLite 那一行的赢家是 **C 实现**，不是 Rust；Go 版选纯 Go 驱动换来的是"零 C 依赖"。
 
 ## 六、搬过来的 UI 决策（原样保留）
@@ -205,18 +268,19 @@ UI 不刷新（读数会停在第一次的样本上）。所有随状态变化�
 Cargo.toml              workspace；default-members 只有 core（主机侧不碰桥）
 .cargo/config.toml      ohos target 的 linker（NDK 自带的 clang 包装器）+ cc 的 CC/AR
 rust/core/              纯 Rust，cargo test 在 Mac 上跑，不认识手机
-rust/store/             唯一编 C 的 crate（rusqlite bundled）；隔开就是为了上面那条
-rust/bridge/            cdylib；src/lib.rs 是桥，csrc/napi_ohos.c 是 NAPI 那一层
-platform/ohos/          build.sh（交叉编译）、run.sh（编 + 装 + 跑）
-scripts/check.sh        fmt、clippy、test、交叉编译，以及五条硬断言
-app/                    ArkTS 外壳，从 go-ohos-kit 搬来并改名（不是重新设计）
+rust/store/             唯一编 C 的 crate（rusqlite bundled）；清单和 20k 行都在这一个文件里
+rust/bridge/            cdylib；src/lib.rs 是桥，csrc/ 下是 NAPI 胶水和 stdout→hilog 的那根管
+platform/ohos/          build.sh（交叉编译）、run.sh（编 + 装 + 跑）、bench.sh、new.sh
+scripts/check.sh        fmt、clippy、test、交叉编译，以及六条硬断言
+app/                    ArkTS 外壳，从 go-ohos-kit 搬来改名；几处修正只在 Rust 侧（见 §五.1）
 ```
 
 一次自检的样子：
 
 ```text
 == cargo fmt ==      ok
-== cargo clippy ==   ok
-== cargo test ==     28 passed (core), 2 passed (bridge)
-== cross build ==    librustcore.so — 2.7M, 24 exports, 0 TPRELs
+== cargo clippy ==   ok（--workspace：core / store / bridge 都 lint）
+== cargo test ==     30 passed (core), 7 (store), 8 (bridge)
+== NAPI surface ==   22 functions, declared and registered
+== cross build ==    librustcore.so — 2.7M, 24 exports, 0 TPRELs, 引用了 dup2
 ```

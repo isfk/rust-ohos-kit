@@ -55,13 +55,15 @@ Rust 没有运行时可言：一个 ELF 里的代码，libc 由宿主进程准�
 ArkTS / ArkUI       界面、权限、Kit、surface
     │  import 'librustcore.so'
 NAPI 胶水           rust/bridge/csrc/napi_ohos.c —— 基本是 Go 版的原文，只换了前缀
+                    （同目录的 log_ohos.c 把 fd 1/2 接进 hilog，也是那边搬来的）
     │  extern "C"
 Rust 内核           rust/core（纯 Rust）+ rust/store（唯一编 C 的 crate）
 ```
 
 那层 C 胶水几乎是 Go 版的原文，这一点是刻意的：**如果"边界"这个说法成立，胶水就不该
 分辨得出底下是什么语言。** 实际差别只有一个 `rustkit_set_emit()` 注册函数，因为 Rust
-不引用 C 符号（只有 C 引用 Rust）。
+不引用 C 符号（只有 C 引用 Rust）—— 所以日志也是 `eprintln!`，由 C 的构造函数接住，
+而不是 Rust 去调 hilog。
 
 ## 内核里有什么
 
@@ -77,8 +79,11 @@ Rust 内核           rust/core（纯 Rust）+ rust/store（唯一编 C 的 crat
 | `file` | magic bytes 认格式 + 全文件 SHA-256 |
 
 线格式（`rows` + `encode_rows`）也在里面：同一页 2000 行，JSON 与紧凑格式两条路。
-`rust/store` 是第六个，也是唯一依赖 C 的那个：打开文件、seed、page、count、reset，4 个用例
-（其中一个会关掉再开真实文件，确认行还在）。
+`rust/store` 是第六个，也是唯一依赖 C 的那个：打开文件、20k 行的 seed/page/count/reset，
+以及**清单本身**（`todos` 表），7 个用例（其中一个会关掉再开真实文件，确认行还在）。
+清单的规则归 core —— 存失败要回滚、id 不许跳号，这两条在 `todos.rs` 里用闭包测，不需要
+数据库；表的形状归 store；两边在桥里碰头（`to_store` / `from_store`），和 Go 的
+`todoPersister` 同一个位置。
 
 ## 真机上验过的
 
@@ -93,7 +98,7 @@ Rust 内核           rust/core（纯 Rust）+ rust/store（唯一编 C 的 crat
 ## 命令
 
 ```sh
-scripts/check.sh              # fmt + clippy + 测试 + 交叉编译 + 五条断言 + 文档一致性
+scripts/check.sh              # fmt + clippy + 测试 + 交叉编译 + 六条断言 + 文档一致性
 scripts/check.sh --no-build   # 没有 SDK 的机器
 platform/ohos/build.sh        # 只编 librustcore.so，并放进 app/entry/libs
 platform/ohos/run.sh          # 编 + 装 + 跑（要设备 + 一次 DevEco 签名）
@@ -107,18 +112,20 @@ platform/ohos/bench.sh 5      # 桥的读数：不点按钮，5 轮 + 中位数�
 不会携带本机签名文件、`local.properties`、依赖目录或编译产物；尚未提交的源码改动
 也不会进入新工程。`./build.sh` 可先单独验证交叉编译，不会装机。
 
-`check.sh` 的五条断言盯的都是**只在设备上现形**的失败：产物无 `TLS_TPREL64`、
-`napi_module_register` 被引用、NEEDED 里有 NAPI 与 hilog 两个系统库、两份 `color.json`
-的 token 名集合一致。
+`check.sh` 盯的都是**只在设备上现形**的失败：产物无 `TLS_TPREL64`、`napi_module_register`
+被引用（C 胶水没被丢掉）、`dup2` 被引用（日志管道没被丢掉）、NEEDED 里有 NAPI 与 hilog
+两个系统库、两份 `color.json` 的 token 名集合一致、`index.d.ts` 和 `Init()` 注册的函数名
+一个不多一个不少。
 
 一次自检的样子：
 
 ```text
 == cargo fmt ==       ok
 == cargo clippy ==    ok
-== cargo test ==      28 core + 4 store + 6 bridge
+== cargo test ==      30 core + 7 store + 8 bridge
 == scaffold ==        shell syntax + help
 == colour ramps ==    both ramps declare 15 tokens
+== NAPI surface ==    22 functions, declared and registered
 == conclusions page == identical to the sibling's copy
 == cross build ==     librustcore.so — 2.7M, 24 exports, 0 TPRELs
 ```
@@ -127,11 +134,11 @@ platform/ohos/bench.sh 5      # 桥的读数：不点按钮，5 轮 + 中位数�
 
 ```text
 rust/core/            纯 Rust：cargo test 在这里过，不认识手机
-rust/store/           唯一编 C 的 crate（rusqlite bundled）
+rust/store/           唯一编 C 的 crate（rusqlite bundled）；清单和 20k 行同一个文件
 rust/bridge/          cdylib：src/lib.rs 是桥，csrc/napi_ohos.c 是 NAPI 那一层
 app/                  ArkTS 外壳，从 go-ohos-kit 搬来并改名（不是重新设计）
 platform/ohos/        build.sh（交叉编译）、run.sh（编 + 装 + 跑）、new.sh（脚手架）
-scripts/check.sh      fmt、clippy、测试、交叉编译，以及那五条断言
+scripts/check.sh      fmt、clippy、测试、交叉编译，以及那六条断言
 CONTEXT.md            这个仓库从哪来、Go 那四笔债逐条对照、踩过的坑
 AGENTS.md             动手前要读的规则和坑
 ```

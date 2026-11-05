@@ -302,8 +302,9 @@ export class RustCore {
   }
 
   /**
-   * Opens the core's own SQLite file. The path is the app's sandbox: a Go
-   * library in HarmonyOS has no environment to read it from.
+   * Opens the core's own SQLite file. The path is the app's sandbox, and only
+   * ArkTS can ask the platform for it: a core crate has no way to learn where on
+   * the device its own app is allowed to write.
    */
   dbOpen(filesDir: string): DbOpenResult {
     try {

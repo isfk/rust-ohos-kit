@@ -1,6 +1,6 @@
 // The one place a core event becomes something a component knows about.
 //
-// Go pushes events through a single thread-safe channel, and the bridge hands
+// The core pushes events through a single thread-safe channel, and the bridge hands
 // them to whichever function listen() was given — so the registration can only
 // be owned in one place. That place used to be Index.ets, where a growing
 // if (e.kind === …) chain meant every new event edited the page.

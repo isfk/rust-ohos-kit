@@ -26,6 +26,12 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
    这和 Go 那边把 SQLite 关进 `go/store` 是同一个动作。`cargo test -p rustkit-store`
    仍然能在 Mac 上跑（bundled 对宿主平台一样能编）。
 
+   **待办清单也住在这个文件里**（`filesDir/rustkit.db`，`todos` 表；`rows` 表仍是 20k
+   行对比用）。清单的形状归 core（`rust/core/src/todos.rs`：id 规则、空标题不算一行、
+   存失败要回滚），表的形状归 store，**两边在本文件里碰头** —— `to_store` / `from_store`
+   就是全部，和 Go 那边 `todoPersister` 的位置一样。别让 `rust/store` 依赖 core：
+   数据库能把业务的规则掰弯，那就不是"一个文件一个写者"，是一个文件一个老板。
+
 2. **平台的东西留在平台侧**：解码（HEIF/JPEG 归系统解码器）、权限、surface、Kit 全在 ArkTS；
    内核只收已经规整的数据（RGBA 字节、fd、JSON）。**别在内核里塞 `image` crate 去解相机照片** ——
    相机默认存 HEIF。
@@ -78,6 +84,16 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 
 ## 陷阱清单
 
+- **stdout/stderr 在鸿蒙里没有人接**（本仓库踩过）。`eprintln!` 和 panic 的消息走 fd 1/2，
+  而 app 进程的这两个描述符给的是空气 —— 表现是"日志一片空白"，而不是报错。
+  `rust/bridge/csrc/log_ohos.c` 用一个构造函数把 1/2 接进 pipe、再由一条 C 线程写 hilog：
+  `hdc shell hilog -T rustkit` 就是它的出口。`check.sh` 断言产物里引用 `dup2`，
+  因为这个对象被丢掉时同样是静默的（和上面那条一个失败类别）。
+  写日志的方式就是 `eprintln!`，**不要在 Rust 里直接引 C 的 hilog 函数** —— 那会让
+  "Rust 不引用任何 C 符号"这条前提不再成立（正是它让 `build.rs` 的写法有了依据）。
+- **`stop()` 不写盘**。每次增/改/删都在同一次调用里提交（`List::change_durably` +
+  `save_todos`），所以没有"退出时补一次保存"这条路径；加回来只会在最不适合的时刻
+  多一条没人测过的分支。
 - **静态库会被整个丢掉**（本仓库踩过）。`cc` 编出来的 `.a`，如果 Rust 侧不引用其中任何符号，
   链接器一个成员都不拉 —— 连 `__attribute__((constructor))` 里的 `napi_module_register` 也消失。
   表现完全静默：`.so` 有了、导出都在、ArkTS 拿到一个空模块。
@@ -130,6 +146,11 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 
 ## 约定
 
+- **ArkTS 外壳两边一起改**。`app/entry/src/main/ets` 是这个对照实验的控制变量：能跑在
+  Rust 内核上的东西，也必须在 Go 内核上跑。四个“装着行为”的文件（`RustCore.ts`、
+  `events.ets`、`TodoComposer.ets`、`Index.ets`）在归一化掉 `rustcore`/`gocore` 和语言名之后
+  必须逐字节相同 —— `scripts/check.sh` 会拿兄弟仓库对，漂了就失败。
+  先在这里加修正、再回填是允许的（实际上真就是这么干的），但**不能只停在一半**。
 - **语言**：代码注释和 commit message 用英文；README / AGENTS.md / CONTEXT.md 用中文。
 - **注释写「为什么」**：桥接代码最容易变成「注释复述代码」。
 - **`cargo fmt` 必须跑，`clippy -- -D warnings` 必须干净**（`scripts/check.sh` 会查）。

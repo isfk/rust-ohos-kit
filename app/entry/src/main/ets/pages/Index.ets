@@ -4,7 +4,7 @@
 // camera, the sensor with the level, each measurement with its own card.
 //
 // The rules this follows are in AGENTS.md ("边界"): state stays in the component
-// that uses it, a Go event has exactly one entry point, and nothing here talks to
+// that uses it, a core event has exactly one entry point, and nothing here talks to
 // librustcore.so directly.
 //
 // Visually it is one column of panels on a 4px rhythm: 16 between panels, 12
@@ -203,7 +203,7 @@ struct Index {
         // you've walked since the first fix.
         LocationCard()
 
-        // A platform callback at 50 Hz, into Go, and back out smoothed.
+        // A platform callback at 50 Hz, into the core, and back out smoothed.
         LevelRow({ active: this.active })
 
         // A runtime permission, a native surface, and a session to tear down.

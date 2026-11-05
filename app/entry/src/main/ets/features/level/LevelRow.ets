@@ -1,5 +1,5 @@
 // The accelerometer, end to end: the platform's 50 Hz callback goes straight into
-// Go, comes back smoothed and turned into degrees, and is drawn as a level.
+// the core, comes back smoothed and turned into degrees, and is drawn as a level.
 //
 // The subscription and the sensor belong to this component, not to the page:
 // a page that owns a 50 Hz stream starts bleeding responsibilities. The two
@@ -61,7 +61,7 @@ export struct LevelRow {
   }
 
   /**
-   * One callback per sample, 20 ms apart, into Go. The bridge passes three
+   * One callback per sample, 20 ms apart, into the core. The bridge passes three
    * doubles and allocates nothing; the core decides how often the UI hears back.
    */
   private onAccel = (data: sensor.AccelerometerResponse): void => {
