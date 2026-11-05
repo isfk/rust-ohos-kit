@@ -97,8 +97,15 @@ scripts/check.sh              # fmt + clippy + 测试 + 交叉编译 + 五条断
 scripts/check.sh --no-build   # 没有 SDK 的机器
 platform/ohos/build.sh        # 只编 librustcore.so，并放进 app/entry/libs
 platform/ohos/run.sh          # 编 + 装 + 跑（要设备 + 一次 DevEco 签名）
+platform/ohos/new.sh myapp --bundle com.example.myapp --label 'My App' # 新起独立工程
 platform/ohos/bench.sh 5      # 桥的读数：不点按钮，5 轮 + 中位数表
 ```
+
+`new.sh` 默认在 `apps/<name>/` 生成完整 Rust workspace 和 ArkTS 工程；第二个位置参数可指定
+输出目录。默认包名 `com.example.<name>`，新包名必须在 DevEco Studio 对生成的 `app/`
+重新自动签名，随后运行生成目录的 `./run.sh`。它从当前 **HEAD 已提交模板**复制，
+不会携带本机签名文件、`local.properties`、依赖目录或编译产物；尚未提交的源码改动
+也不会进入新工程。`./build.sh` 可先单独验证交叉编译，不会装机。
 
 `check.sh` 的五条断言盯的都是**只在设备上现形**的失败：产物无 `TLS_TPREL64`、
 `napi_module_register` 被引用、NEEDED 里有 NAPI 与 hilog 两个系统库、两份 `color.json`
@@ -109,7 +116,8 @@ platform/ohos/bench.sh 5      # 桥的读数：不点按钮，5 轮 + 中位数�
 ```text
 == cargo fmt ==       ok
 == cargo clippy ==    ok
-== cargo test ==      28 core + 4 store + 2 bridge
+== cargo test ==      28 core + 4 store + 6 bridge
+== scaffold ==        shell syntax + help
 == colour ramps ==    both ramps declare 15 tokens
 == conclusions page == identical to the sibling's copy
 == cross build ==     librustcore.so — 2.7M, 24 exports, 0 TPRELs
@@ -122,7 +130,7 @@ rust/core/            纯 Rust：cargo test 在这里过，不认识手机
 rust/store/           唯一编 C 的 crate（rusqlite bundled）
 rust/bridge/          cdylib：src/lib.rs 是桥，csrc/napi_ohos.c 是 NAPI 那一层
 app/                  ArkTS 外壳，从 go-ohos-kit 搬来并改名（不是重新设计）
-platform/ohos/        build.sh（交叉编译）、run.sh（编 + 装 + 跑）
+platform/ohos/        build.sh（交叉编译）、run.sh（编 + 装 + 跑）、new.sh（脚手架）
 scripts/check.sh      fmt、clippy、测试、交叉编译，以及那五条断言
 CONTEXT.md            这个仓库从哪来、Go 那四笔债逐条对照、踩过的坑
 AGENTS.md             动手前要读的规则和坑

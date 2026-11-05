@@ -19,12 +19,16 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 echo "== cargo test =="
 # The core only. The bridge is a `cdylib` that exists to be dlopen'd by
-# HarmonyOS: its own tests are the three that do not need a phone attached.
+# HarmonyOS: bridge tests exercise its host-safe FFI boundary without a phone.
 cargo test -p rustkit-core
 # The database is not part of the core — a C library lives in here — but it is
 # still testable on a laptop: that is what keeping it in its own crate buys.
 cargo test -p rustkit-store
 cargo test -p rustkit-bridge --lib
+
+echo "== scaffold =="
+sh -n platform/ohos/new.sh
+platform/ohos/new.sh --help >/dev/null 2>&1
 
 echo "== colour ramps =="
 # Every token the light theme declares, the dark one has to declare too: a name
