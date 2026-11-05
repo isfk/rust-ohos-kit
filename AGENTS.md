@@ -104,6 +104,9 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
   因此走 `pread`（`FileExt::read_at`，包成 `FromStart`），**偏移量一点不动**，也不需要
   `dup`。想看 `dup` 有用没用的实测：`dup` 得到的是**同一个** description，偏移量共享 ——
   Go 那边 `InspectFD` 里的 `syscall.Dup` 解决的是"有权关掉这个句柄"，不是偏移量。
+  **非 seekable 的 fd（管道、套接字）会 `ESPIPE`，这里就让它失败**，不是省事而是语义：
+  算整份 sha256 必须读完，读完流就没了 —— 拒绝比"hash 成功、解码器拿到空"诚实，而且
+  一个字节都没消费。（"这个分支没法测" 是错的：`UnixStream::pair()` 造一对就能测。）
 - **静态库会被整个丢掉**（本仓库踩过）。`cc` 编出来的 `.a`，如果 Rust 侧不引用其中任何符号，
   链接器一个成员都不拉 —— 连 `__attribute__((constructor))` 里的 `napi_module_register` 也消失。
   表现完全静默：`.so` 有了、导出都在、ArkTS 拿到一个空模块。
