@@ -94,6 +94,12 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
 - **`stop()` 不写盘**。每次增/改/删都在同一次调用里提交（`List::change_durably` +
   `save_todos`），所以没有"退出时补一次保存"这条路径；加回来只会在最不适合的时刻
   多一条没人测过的分支。
+- **借来的 fd 不要用 `Read` 读**。fd 的偏移量属于 open file description，不是属于某个
+  句柄 —— ArkTS 拿到 fd 之后，`rustkit_inspect` 读一遍、紧接着 `image.createImageSource`
+  再用同一个 fd。`File` 的 `Read` 会把它推到 EOF，解码器就什么也读不到。`rustkit_inspect`
+  因此走 `pread`（`FileExt::read_at`，包成 `FromStart`），**偏移量一点不动**，也不需要
+  `dup`。想看 `dup` 有用没用的实测：`dup` 得到的是**同一个** description，偏移量共享 ——
+  Go 那边 `InspectFD` 里的 `syscall.Dup` 解决的是"有权关掉这个句柄"，不是偏移量。
 - **静态库会被整个丢掉**（本仓库踩过）。`cc` 编出来的 `.a`，如果 Rust 侧不引用其中任何符号，
   链接器一个成员都不拉 —— 连 `__attribute__((constructor))` 里的 `napi_module_register` 也消失。
   表现完全静默：`.so` 有了、导出都在、ArkTS 拿到一个空模块。
