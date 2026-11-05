@@ -166,6 +166,7 @@ fn import_legacy_list(store: &Store, dir: &Path) {
 /// SQLite file, or nowhere at all when it could not be opened at start.
 fn mutate_list(change: impl FnOnce(&mut List)) -> *mut c_char {
     let Ok(_mutation) = MUTATION.lock() else {
+        eprintln!("rustkit: the mutation lock is poisoned; refusing a change");
         return out(json_error("the core is unavailable"));
     };
     let result = with_kernel(|kernel| {
@@ -188,7 +189,13 @@ fn mutate_list(change: impl FnOnce(&mut List)) -> *mut c_char {
     });
     match result {
         Some(Ok(json)) => out(json),
-        Some(Err(err)) => out(json_error(&err)),
+        Some(Err(err)) => {
+            // The UI shows this as well (the banner under the composer), but it
+            // is the first thing to look for when someone says their list did
+            // not survive — and the log is the copy that outlives the screen.
+            eprintln!("rustkit: {err}");
+            out(json_error(&err))
+        }
         None => out(json_error("the core is not running")),
     }
 }
