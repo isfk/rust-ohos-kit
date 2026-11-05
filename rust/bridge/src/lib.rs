@@ -30,10 +30,15 @@ use rustkit_core::rows;
 use rustkit_core::todos::{List, Todo};
 use rustkit_store::{Store, Todo as StoreTodo};
 
-/// The accelerometer arrives at 50 Hz and the screen refreshes at 60: the
-/// bridge does not need to push every sample, so this is the interval the UI
-/// hears about.
-const LEVEL_PUSH: Duration = Duration::from_millis(50);
+/// The accelerometer arrives at 50 Hz and the screen refreshes at 60: the bridge
+/// does not need to push every sample, so this is the interval the UI hears
+/// about — roughly every other sample, about 30 a second.
+///
+/// 33 ms, because the Go side of this experiment picked that number first and the
+/// two apps have to feel the same. Nothing in the arithmetic depends on it; the
+/// only thing a different interval buys is a comparison that measures the wrong
+/// difference.
+const LEVEL_PUSH: Duration = Duration::from_millis(33);
 
 /// Everything the app holds, in one place. Every field is the core's: the
 /// bridge adds a clock and a path, and nothing else.
