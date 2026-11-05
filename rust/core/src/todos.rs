@@ -48,6 +48,33 @@ impl List {
         &self.todos
     }
 
+    /// Applies `change`, then hands the result to `save`.
+    ///
+    /// If `save` fails the list goes back to exactly what it was — rows *and*
+    /// the id counter — because the UI draws what this returns: a row visible on
+    /// screen that never reached the disk is the one failure a person would
+    /// notice and could not explain. The counter is part of "exactly": putting
+    /// the rows back without it would burn an id on every failed write.
+    ///
+    /// The check lives here rather than in the bridge for the usual reason: as
+    /// written, the rule can be tested without a database, a device, or an FFI
+    /// boundary — a closure that returns `Err` is all it takes.
+    pub fn change_durably<E>(
+        &mut self,
+        change: impl FnOnce(&mut Self),
+        save: impl FnOnce(&[Todo]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let before = self.clone();
+        change(self);
+        match save(&self.todos) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                *self = before;
+                Err(err)
+            }
+        }
+    }
+
     /// How many rows are still open. The UI shows it, so the list answers it.
     pub fn remaining(&self) -> usize {
         self.todos.iter().filter(|t| !t.done).count()
@@ -150,5 +177,51 @@ mod tests {
         list.add("one");
         assert_eq!(list.toggle(99).len(), 1);
         assert_eq!(list.remaining(), 1);
+    }
+
+    #[test]
+    fn a_failed_save_puts_the_list_back_exactly() {
+        let mut list = List::new();
+        list.add("kept");
+        let before = list.snapshot().to_vec();
+
+        let failed: Result<(), &str> = list.change_durably(
+            |list| {
+                list.add("must not appear");
+            },
+            |_| Err("disk full"),
+        );
+        assert_eq!(failed, Err("disk full"));
+        assert_eq!(
+            list.snapshot(),
+            before.as_slice(),
+            "the row is not on screen"
+        );
+
+        // The id counter went back too: without that, every failed write would
+        // burn a number and the UI would show a gap it cannot explain.
+        list.add("next");
+        assert_eq!(list.snapshot().last().unwrap().id, 2);
+    }
+
+    #[test]
+    fn a_successful_save_keeps_the_change_and_hands_it_the_whole_list() {
+        let mut list = List::new();
+        list.add("one");
+        let mut saved: Vec<String> = Vec::new();
+
+        let done = list.change_durably(
+            |list| {
+                list.add("two");
+            },
+            |todos| -> Result<(), ()> {
+                saved = todos.iter().map(|t| t.title.clone()).collect();
+                Ok(())
+            },
+        );
+        assert_eq!(done, Ok(()));
+        assert_eq!(titles(&list), ["one", "two"]);
+        // Save takes the list, not a diff: the store replaces the table with it.
+        assert_eq!(saved, ["one", "two"]);
     }
 }

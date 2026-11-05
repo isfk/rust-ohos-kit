@@ -1,20 +1,20 @@
 // The fourth comparison, and the one this file exists for: the same 20k rows
 // written by two databases that are both SQLite, from two sides of the bridge.
 //
-//   Go side   — the core's own file (modernc.org/sqlite, pure Go, no cgo)
+//   Core side — the core's own file (rusqlite, SQLite's own C compiled in)
 //   RDB side  — the platform's relationalStore, which owns the file it manages
 //
 // They are deliberately two files, not two table names in one: one file has
 // one writer. Two handles on the same file is SQLITE_BUSY, and it shows up
 // only when it is inconvenient.
 //
-// Both numbers include building the rows (Go builds titles inside its call,
-// the platform's writer builds ValuesBuckets here), because that is what the
-// app actually pays. The Go side also reports the store's own clock, so the
+// Both numbers include building the rows (the core builds titles inside its
+// call, the platform's writer builds ValuesBuckets here), because that is what
+// the app actually pays. The core also reports the store's own clock, so the
 // same call says what the bridge cost without a second experiment.
 //
-// The two sides are named on the page rather than implied: "Go · seed 20k" and
-// "RDB · seed 20k" were a decoder ring for anyone who had not read this file.
+// The two sides are named on the page rather than implied: "Rust core" and
+// "Platform store" were a decoder ring for anyone who had not read this file.
 
 import { relationalStore } from '@kit.ArkData';
 import { systemDateTime } from '@kit.BasicServicesKit';
@@ -27,8 +27,8 @@ const CHUNK = 2000; // batchInsert takes an array; 2k objects at a time
 @ComponentV2
 export struct DbCard {
   @Local private status: string = 'not opened';
-  @Local private goSeedLine: string = '';
-  @Local private goPageLine: string = '';
+  @Local private coreSeedLine: string = '';
+  @Local private corePageLine: string = '';
   @Local private rdbSeedLine: string = '';
   @Local private rdbPageLine: string = '';
   /**
@@ -65,12 +65,12 @@ export struct DbCard {
     const total = (this.nowNs() - start) / 1e6;
     this.refreshCount();
     if (!res.ok) {
-      this.goSeedLine = res.error ?? 'seed failed';
+      this.coreSeedLine = res.error ?? 'seed failed';
       return;
     }
-    this.goSeedLine = `seed · ${total.toFixed(1)} ms (store ${(res.micros / 1000).toFixed(1)})` +
+    this.coreSeedLine = `seed · ${total.toFixed(1)} ms (store ${(res.micros / 1000).toFixed(1)})` +
       ` · ${res.rows} rows`;
-    this.note(`go seed ${SEED}: ${this.goSeedLine}`);
+    this.note(`core seed ${SEED}: ${this.coreSeedLine}`);
   }
 
   private goPage(): void {
@@ -79,12 +79,12 @@ export struct DbCard {
     const total = (this.nowNs() - start) / 1e6;
     this.refreshCount();
     if (!res.ok) {
-      this.goPageLine = res.error ?? 'page failed';
+      this.corePageLine = res.error ?? 'page failed';
       return;
     }
-    this.goPageLine = `page · ${total.toFixed(1)} ms (store ${(res.micros / 1000).toFixed(2)})` +
+    this.corePageLine = `page · ${total.toFixed(1)} ms (store ${(res.micros / 1000).toFixed(2)})` +
       ` · ${res.count} rows`;
-    this.note(`go page ${PAGE}: ${this.goPageLine}`);
+    this.note(`core page ${PAGE}: ${this.corePageLine}`);
   }
 
   /** The platform's store, opened once and reused. */
@@ -146,8 +146,8 @@ export struct DbCard {
     rustcore.dbReset();
     const store = await this.platform();
     await store.executeSql('DELETE FROM bench');
-    this.goSeedLine = '';
-    this.goPageLine = '';
+    this.coreSeedLine = '';
+    this.corePageLine = '';
     this.rdbSeedLine = '';
     this.rdbPageLine = '';
     this.refreshCount();
@@ -173,7 +173,7 @@ export struct DbCard {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      // Go's own file, through the bridge: one transaction, one statement.
+      // The core's own file, through the bridge: one transaction, one statement.
       Text('Rust core')
         .fontSize(11)
         .fontColor($r('app.color.text_muted'))
@@ -202,16 +202,16 @@ export struct DbCard {
           })
       }
       .width('100%')
-      if (this.goSeedLine.length > 0) {
-        Text(this.goSeedLine)
+      if (this.coreSeedLine.length > 0) {
+        Text(this.coreSeedLine)
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))
           .fontFeature('"tnum" 1')
           .maxLines(2)
           .width('100%')
       }
-      if (this.goPageLine.length > 0) {
-        Text(this.goPageLine)
+      if (this.corePageLine.length > 0) {
+        Text(this.corePageLine)
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))
           .fontFeature('"tnum" 1')
@@ -281,7 +281,9 @@ export struct DbCard {
             this.resetBoth();
           })
         Blank()
-        Text(`${this.coreRows} rows in the core's file`)
+        // "bench rows": the file also holds the app's own list now, and this
+        // number was only ever the 20k comparison table.
+        Text(`${this.coreRows} bench rows in the core's file`)
           .fontSize(12)
           .fontColor($r('app.color.text_muted'))
           .fontFeature('"tnum" 1')

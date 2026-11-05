@@ -16,4 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [build-dependencies]
-cc = "1"
+# Pinned to the version that is in Cargo.lock on purpose: `build.rs` calls
+# `cc::Build::compile_intermediates()`, which `cc` documents as an unstable API.
+# A caret range would let cargo pick a minor release that changes its shape, and
+# the failure is a link error that reads like a Rust problem.
+cc = "=1.11.0"

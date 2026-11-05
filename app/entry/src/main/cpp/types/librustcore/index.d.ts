@@ -46,10 +46,14 @@ export interface DbPageResult {
 /** Calls the core's events: a new list, or a line of text. */
 export function listen(fn: (json: string) => void): void;
 
-/** Starts the core: reads the list from filesDir, starts its ticker. */
+/**
+ * Starts the core: opens the database under filesDir, reads the list out of it,
+ * starts its ticker. Without a usable filesDir the list works and does not
+ * survive the session — the log at start says which of the two happened.
+ */
 export function start(filesDir: string): void;
 
-/** Stops the core and writes the list out. */
+/** Stops the core. Nothing is written here: every change was committed already. */
 export function stop(): void;
 
 /** The list, as JSON (a snapshot event). */
@@ -104,20 +108,22 @@ export function rowsJson(offset: number, limit: number): string;
 export function accel(x: number, y: number, z: number): void;
 
 /**
- * Opens (or creates) the core's own SQLite file under filesDir. Two writers on
- * one file is SQLITE_BUSY waiting to happen, so this file is the core's alone —
- * the platform's relationalStore owns the one it manages.
+ * Opens the core's own SQLite file under filesDir — the list and the 20k
+ * benchmark rows live in this one file. Idempotent, and `start` has already
+ * opened it, so this is mostly a way to ask where it is. Two writers on one file
+ * is SQLITE_BUSY waiting to happen, so the file is the core's alone: the
+ * platform's relationalStore owns the one it manages.
  */
 export function dbOpen(filesDir: string): string;
 
-/** Replaces the core's table with n rows, in one transaction. */
+/** Replaces the benchmark table with n rows, in one transaction. */
 export function dbSeed(n: number): string;
 
-/** A page of the core's table, in id order (JSON). */
+/** A page of the benchmark table, in id order (JSON). */
 export function dbPage(offset: number, limit: number): string;
 
-/** How many rows the core's table holds (0 before it is open). */
+/** How many rows the benchmark table holds (0 before it is open). */
 export function dbCount(): number;
 
-/** Empties the core's table, keeping the file. */
+/** Empties the benchmark table, keeping the file (the list is untouched). */
 export function dbReset(): string;

@@ -59,7 +59,27 @@ impl From<rusqlite::Error> for StoreError {
 
 type Result<T> = std::result::Result<T, StoreError>;
 
+/// The app's list, as this crate stores it. It is not `rustkit_core::Todo`: the
+/// two sides agree on a shape, not on a type, and the bridge does the mapping —
+/// the same split `go/store` makes, for the same reason (`rust/store` must not
+/// depend on the core, or the database would be able to bend the core's rules).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Todo {
+    pub id: i64,
+    pub title: String,
+    pub done: bool,
+}
+
+/// Two tables in one file on purpose: `rows` is the 20k-row comparison, `todos`
+/// is what the person typed. One file has one writer, and the core is that
+/// writer — the platform's `relationalStore` owns its own file (see the module
+/// docs), which is why the bench card keeps the two apart.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS rows (
+	id    INTEGER PRIMARY KEY,
+	title TEXT    NOT NULL,
+	done  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS todos (
 	id    INTEGER PRIMARY KEY,
 	title TEXT    NOT NULL,
 	done  INTEGER NOT NULL
@@ -171,6 +191,52 @@ impl Store {
         Ok(())
     }
 
+    // ----------------------------------------------------------- the app's list
+    //
+    // The list is not the benchmark: it is the only state a person typed, so it
+    // is read once at start and written after every change. The whole list goes
+    // in on each write — "who changed what" is the core's business, and a
+    // delete-and-insert in one transaction keeps the two copies in step without
+    // asking the UI to tell us about diffs it does not compute.
+
+    /// The list, in id order — the order the UI draws it in.
+    pub fn todos(&self) -> Result<Vec<Todo>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id, title, done FROM todos ORDER BY id")?;
+        let todos = stmt
+            .query_map([], |row| {
+                Ok(Todo {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    done: row.get::<_, i64>(2)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<Todo>, _>>()?;
+        Ok(todos)
+    }
+
+    /// How many rows the list holds.
+    pub fn count_todos(&self) -> Result<i32> {
+        let conn = self.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM todos", [], |row| row.get(0))?)
+    }
+
+    /// Replaces the list, in one transaction: a half-written list is never what
+    /// the next launch reads.
+    pub fn save_todos(&self, todos: &[Todo]) -> Result<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM todos", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO todos (id, title, done) VALUES (?1, ?2, ?3)")?;
+            for todo in todos {
+                stmt.execute((todo.id, &todo.title, todo.done))?;
+            }
+        }
+        tx.commit()?;
+        Ok(todos.len())
+    }
+
     /// A poisoned mutex is not worth taking the process down for: the caller gets
     /// an error and the panel says so.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -248,6 +314,60 @@ mod tests {
         assert!(
             Store::open(Path::new("")).is_err(),
             "an empty path is an error"
+        );
+    }
+
+    fn todos(ids: &[(i64, &str, bool)]) -> Vec<Todo> {
+        ids.iter()
+            .map(|(id, title, done)| Todo {
+                id: *id,
+                title: (*title).to_owned(),
+                done: *done,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_list_round_trips_with_its_flags() {
+        let store = Store::in_memory().unwrap();
+        let list = todos(&[(1, "one", false), (2, "two", true)]);
+        assert_eq!(store.save_todos(&list).unwrap(), 2);
+        assert_eq!(store.count_todos().unwrap(), 2);
+        assert_eq!(
+            store.todos().unwrap(),
+            list,
+            "the id, the title and the done flag all come back"
+        );
+    }
+
+    #[test]
+    fn saving_replaces_the_list_instead_of_appending() {
+        // Every change arrives as the whole list (see `List::change_durably`), so
+        // a delete-then-insert has to be what "save" means: appending would make
+        // the list grow on every keystroke that reached the disk twice.
+        let store = Store::in_memory().unwrap();
+        store.save_todos(&todos(&[(1, "one", false)])).unwrap();
+        store.save_todos(&todos(&[(7, "seven", true)])).unwrap();
+        assert_eq!(store.todos().unwrap(), todos(&[(7, "seven", true)]));
+
+        // And an empty list is a real state, not a no-op: that is what the UI
+        // shows after the last row is deleted, and a restart has to agree.
+        store.save_todos(&[]).unwrap();
+        assert_eq!(store.count_todos().unwrap(), 0);
+    }
+
+    #[test]
+    fn the_two_tables_share_one_file_without_meeting() {
+        let store = Store::in_memory().unwrap();
+        store.seed(5).unwrap();
+        store.save_todos(&todos(&[(3, "three", false)])).unwrap();
+        assert_eq!(store.count().unwrap(), 5, "the bench rows are untouched");
+        assert_eq!(store.count_todos().unwrap(), 1);
+        store.reset().unwrap();
+        assert_eq!(
+            store.count_todos().unwrap(),
+            1,
+            "reset is the rows table only"
         );
     }
 }

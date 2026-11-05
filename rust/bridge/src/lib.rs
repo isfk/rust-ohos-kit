@@ -28,7 +28,7 @@ use rustkit_core::image;
 use rustkit_core::level::{Level, LevelReading};
 use rustkit_core::rows;
 use rustkit_core::todos::{List, Todo};
-use rustkit_store::Store;
+use rustkit_store::{Store, Todo as StoreTodo};
 
 /// The accelerometer arrives at 50 Hz and the screen refreshes at 60: the
 /// bridge does not need to push every sample, so this is the interval the UI
@@ -39,17 +39,14 @@ const LEVEL_PUSH: Duration = Duration::from_millis(50);
 /// bridge adds a clock and a path, and nothing else.
 struct Kernel {
     list: List,
-    /// Where the list is written. `None` until `start`, which is what the first
-    /// launch looks like.
-    path: Option<PathBuf>,
     level: Level,
     track: Track,
     foreground: bool,
     last_level_push: Instant,
-    born: Instant,
     /// Turns the ticker off when the core stops.
     ticker: Arc<AtomicBool>,
-    /// The core's own SQLite file, once `dbOpen` has opened one.
+    /// The app's own SQLite file — the list and the 20k benchmark rows. `None`
+    /// when it could not be opened, which costs durability and nothing else.
     db: Option<Store>,
 }
 
@@ -90,41 +87,106 @@ fn todos_event(todos: &[Todo]) -> String {
     serde_json::json!({ "kind": "todos", "todos": todos }).to_string()
 }
 
-/// Reads the list from disk. A missing file is an empty list, not an error: a
-/// first launch is not a failure.
-fn load_list(path: &Path) -> List {
-    match fs::read_to_string(path) {
-        Ok(text) => List::load(serde_json::from_str::<Vec<Todo>>(&text).unwrap_or_default()),
-        Err(_) => List::new(),
+/// The list, as the database crate stores it. `rustkit_store` must not depend on
+/// the core (the core stays pure Rust and has no idea a database exists), so the
+/// two shapes meet here — in the bridge, which is allowed to know both.
+fn to_store(todos: &[Todo]) -> Vec<StoreTodo> {
+    todos
+        .iter()
+        .map(|todo| StoreTodo {
+            id: todo.id,
+            title: todo.title.clone(),
+            done: todo.done,
+        })
+        .collect()
+}
+
+fn from_store(todos: Vec<StoreTodo>) -> Vec<Todo> {
+    todos
+        .into_iter()
+        .map(|todo| Todo {
+            id: todo.id,
+            title: todo.title,
+            done: todo.done,
+        })
+        .collect()
+}
+
+/// Opens the core's own file and, once, imports the list the JSON years left
+/// behind.
+fn open_store(dir: &Path) -> Result<Store, String> {
+    let store = Store::open(&dir.join("rustkit.db")).map_err(|err| err.to_string())?;
+    import_legacy_list(&store, dir);
+    Ok(store)
+}
+
+/// Moves an old `todos.json` into the database, exactly once.
+///
+/// Only into an empty table: someone who deleted their last row on purpose must
+/// not get yesterday's list back on the next launch — that would be a
+/// resurrection, not a migration. The file is renamed, not deleted, because it
+/// is the only other copy and an import that went wrong should not be the end
+/// of it. Every failure here is a note in the log, not a reason to refuse to
+/// start: a list that cannot be imported is better than an app that cannot open.
+fn import_legacy_list(store: &Store, dir: &Path) {
+    if !matches!(store.count_todos(), Ok(0)) {
+        return; // already has a list, or the table cannot be read
+    }
+    let legacy = dir.join("todos.json");
+    let Ok(text) = fs::read_to_string(&legacy) else {
+        return; // the normal case: no file from the JSON years
+    };
+    let Ok(todos) = serde_json::from_str::<Vec<Todo>>(&text) else {
+        eprintln!(
+            "rustkit: {} is not a list of todos; leaving it alone",
+            legacy.display()
+        );
+        return;
+    };
+    if todos.is_empty() {
+        return;
+    }
+    if let Err(err) = store.save_todos(&to_store(&todos)) {
+        eprintln!("rustkit: could not import {}: {err}", legacy.display());
+        return;
+    }
+    match fs::rename(&legacy, dir.join("todos.json.imported")) {
+        Ok(()) => eprintln!("rustkit: imported {} todos from todos.json", todos.len()),
+        Err(err) => eprintln!(
+            "rustkit: imported {} todos, but todos.json could not be renamed ({err}) — fix that,\n         or the next launch will import them again over an empty list",
+            todos.len()
+        ),
     }
 }
 
-/// Writes the whole list through a temporary file, so a half-written list is
-/// never what a reader finds.
-fn save_list(path: &Path, todos: &[Todo]) -> Result<(), String> {
-    let json = serde_json::to_vec(todos).map_err(|err| err.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|err| err.to_string())?;
-    fs::rename(&tmp, path).map_err(|err| err.to_string())
-}
-
 /// Holds the mutation lock through the save, then publishes only a durable list.
-/// On disk failure, restore the exact in-memory state (including the next id).
+///
+/// The rollback rule itself is `List::change_durably`'s (testable without a
+/// database); this function only decides where "durable" is — the core's own
+/// SQLite file, or nowhere at all when it could not be opened at start.
 fn mutate_list(change: impl FnOnce(&mut List)) -> *mut c_char {
     let Ok(_mutation) = MUTATION.lock() else {
         return out(json_error("the core is unavailable"));
     };
-    match with_kernel(|kernel| {
-        let before = kernel.list.clone();
-        change(&mut kernel.list);
-        if let Some(path) = &kernel.path {
-            if let Err(err) = save_list(path, kernel.list.snapshot()) {
-                kernel.list = before;
-                return Err(format!("could not save todos: {err}"));
-            }
+    let result = with_kernel(|kernel| {
+        // Split the borrows: the list is written, the database is only read.
+        let Kernel { list, db, .. } = kernel;
+        let saved = list.change_durably(change, |todos| match db.as_ref() {
+            Some(store) => store
+                .save_todos(&to_store(todos))
+                .map(|_| ())
+                .map_err(|err| format!("could not save todos: {err}")),
+            // No database: the list works for this session and says so in the
+            // log at start. Pretending to fail here would make the app unusable
+            // for a reason the UI could do nothing about.
+            None => Ok(()),
+        });
+        match saved {
+            Ok(()) => Ok(todos_event(list.snapshot())),
+            Err(err) => Err(err),
         }
-        Ok(todos_event(kernel.list.snapshot()))
-    }) {
+    });
+    match result {
         Some(Ok(json)) => out(json),
         Some(Err(err)) => out(json_error(&err)),
         None => out(json_error("the core is not running")),
@@ -138,7 +200,7 @@ fn spawn_ticker(born: Instant) -> Arc<AtomicBool> {
     let flag = Arc::clone(&stop);
     thread::spawn(move || {
         while !flag.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_secs(1));
             if flag.load(Ordering::Relaxed) {
                 break;
             }
@@ -172,6 +234,28 @@ fn json_result<T: serde::Serialize>(key: &str, value: &T) -> String {
 
 fn json_error(message: &str) -> String {
     serde_json::json!({ "ok": false, "error": message }).to_string()
+}
+
+/// Reads a borrowed descriptor from its first byte without moving its offset.
+///
+/// `Read for File` shares the descriptor's position with everyone else holding
+/// the same one — and ArkTS hands this very descriptor to the image decoder a
+/// line after it asks us what the file is, so a read that ends at EOF leaves the
+/// decoder with nothing. `pread` (via [`FileExt::read_at`]) keeps the position
+/// where the caller left it, and needs no `dup` to clean up afterwards.
+///
+/// [`FileExt::read_at`]: std::os::unix::fs::FileExt::read_at
+struct FromStart<'a> {
+    file: &'a std::fs::File,
+    at: u64,
+}
+
+impl std::io::Read for FromStart<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let got = std::os::unix::fs::FileExt::read_at(self.file, buf, self.at)?;
+        self.at += got as u64;
+        Ok(got)
+    }
 }
 
 /// Borrows a C string for the length of the call.
@@ -213,7 +297,8 @@ pub unsafe extern "C" fn rustkit_free(text: *mut c_char) {
     drop(unsafe { CString::from_raw(text) });
 }
 
-/// Starts the core: reads the list from `files_dir`, starts its ticker.
+/// Starts the core: opens the database under `files_dir`, reads the list out of
+/// it, starts the ticker.
 ///
 /// # Safety
 ///
@@ -231,15 +316,45 @@ pub unsafe extern "C" fn rustkit_start(files_dir: *const c_char) {
     }
     // SAFETY: the caller guarantees a live NUL-terminated path for this call.
     let dir = unsafe { text_of(files_dir) };
-    let path = if dir.is_empty() {
+    let dir = if dir.is_empty() {
         None
     } else {
-        Some(Path::new(&dir).join("todos.json"))
+        Some(PathBuf::from(&dir))
     };
-    let list = match &path {
-        Some(p) => load_list(p),
-        None => List::new(),
+
+    // The database is opened here and not on the first write: a list that cannot
+    // be read is the one thing the UI would otherwise draw wrong, and finding out
+    // at start means the log says so before the person starts typing.
+    let (db, list) = match &dir {
+        Some(dir) => match open_store(dir) {
+            Ok(store) => match store.todos() {
+                Ok(todos) => {
+                    let list = List::load(from_store(todos));
+                    eprintln!(
+                        "rustkit: {} ({} todos)",
+                        store.path().display(),
+                        list.snapshot().len()
+                    );
+                    (Some(store), list)
+                }
+                Err(err) => {
+                    eprintln!("rustkit: could not read the list back: {err}");
+                    (Some(store), List::new())
+                }
+            },
+            Err(err) => {
+                // Same bargain as the Go version: no database is a session that
+                // forgets, not an app that refuses to open.
+                eprintln!("rustkit: no database, the list will not be saved: {err}");
+                (None, List::new())
+            }
+        },
+        None => {
+            eprintln!("rustkit: started without a files dir, the list will not be saved");
+            (None, List::new())
+        }
     };
+
     let born = Instant::now();
     let ticker = spawn_ticker(born);
 
@@ -247,14 +362,12 @@ pub unsafe extern "C" fn rustkit_start(files_dir: *const c_char) {
     if let Ok(mut slot) = KERNEL.lock() {
         *slot = Some(Kernel {
             list,
-            path,
             level: Level::new(),
             track: Track::new(),
             foreground: true,
             last_level_push: Instant::now(),
-            born,
             ticker,
-            db: None,
+            db,
         });
     }
     // Push the first list before anyone can ask for it: an event with nobody
@@ -262,6 +375,12 @@ pub unsafe extern "C" fn rustkit_start(files_dir: *const c_char) {
     emit(snapshot);
 }
 
+/// Stops the core and releases the database.
+///
+/// There is no save here on purpose: every change committed before the UI was
+/// told about it (see [`mutate_list`]), so there is nothing left to write — and
+/// a "save on the way out" would be a second path that only runs when the app
+/// is being torn down, which is the worst time to discover it is wrong.
 #[no_mangle]
 pub extern "C" fn rustkit_stop() {
     let Ok(_lifecycle) = LIFECYCLE.lock() else {
@@ -273,11 +392,7 @@ pub extern "C" fn rustkit_stop() {
     let taken = KERNEL.lock().ok().and_then(|mut slot| slot.take());
     if let Some(kernel) = taken {
         kernel.ticker.store(true, Ordering::Relaxed);
-        if let Some(path) = &kernel.path {
-            if let Err(err) = save_list(path, kernel.list.snapshot()) {
-                eprintln!("rustkit: could not save todos on stop: {err}");
-            }
-        }
+        eprintln!("rustkit: stopped ({} todos)", kernel.list.snapshot().len());
     }
 }
 
@@ -326,8 +441,8 @@ pub extern "C" fn rustkit_remaining() -> i32 {
 ///
 /// # Safety
 ///
-/// `fd` must be open and owned by the caller: this borrows it, it does not close
-/// it. `name` must be a NUL-terminated string, or null.
+/// `fd` must be open and owned by the caller: this borrows it, it neither closes
+/// it nor moves its offset. `name` must be a NUL-terminated string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn rustkit_inspect(fd: i32, name: *const c_char) -> *mut c_char {
     use std::mem::ManuallyDrop;
@@ -341,8 +456,8 @@ pub unsafe extern "C" fn rustkit_inspect(fd: i32, name: *const c_char) -> *mut c
     // ManuallyDrop: the descriptor belongs to the UI, which closes it.
     // SAFETY: the caller guarantees `fd` is open; ManuallyDrop preserves its ownership.
     let file = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
-    let mut file_ref = &*file;
-    match file::inspect(&mut file_ref, &name) {
+    let mut reader = FromStart { file: &file, at: 0 };
+    match file::inspect(&mut reader, &name) {
         Ok(info) => out(json_result("file", &info)),
         Err(err) => out(json_error(&err.to_string())),
     }
@@ -410,10 +525,7 @@ pub extern "C" fn rustkit_location_reset() {
 
 #[no_mangle]
 pub extern "C" fn rustkit_lifecycle(foreground: i32) {
-    with_kernel(|k| {
-        k.foreground = foreground != 0;
-        k.born
-    });
+    with_kernel(|k| k.foreground = foreground != 0);
 }
 
 // ------------------------------------------------- the big list, and its wire
@@ -490,14 +602,23 @@ pub unsafe extern "C" fn rustkit_db_open(files_dir: *const c_char) -> *mut c_cha
     if dir.is_empty() {
         return out(json_error("no files dir"));
     }
-    let path = Path::new(&dir).join("rustkit.db");
-    let result = with_kernel(|kernel| match Store::open(&path) {
-        Ok(store) => {
-            let where_it_is = store.path().display().to_string();
-            drop(kernel.db.replace(store)); // a second open replaces and closes the first
-            Ok(where_it_is)
+    let dir = PathBuf::from(&dir);
+    // Idempotent, like the Go version: the UI may call this on every page show,
+    // and `start` already opened the same file. A second open would be a second
+    // handle on one file — the one thing this app is careful not to do.
+    //
+    // Opening here does not re-read the list: the memory copy is the one the UI
+    // has been drawing, and pulling an older copy out from under it would make
+    // the panel disagree with itself.
+    let result = with_kernel(|kernel| -> Result<String, String> {
+        if kernel.db.is_none() {
+            kernel.db = Some(open_store(&dir)?);
         }
-        Err(err) => Err(err.to_string()),
+        Ok(kernel
+            .db
+            .as_ref()
+            .map(|store| store.path().display().to_string())
+            .unwrap_or_default())
     });
     match result {
         Some(Ok(path)) => out(serde_json::json!({ "ok": true, "path": path }).to_string()),
@@ -595,6 +716,59 @@ mod tests {
     // FFI tests share one process-global kernel; keep their lifecycle isolated.
     static TEST_KERNEL: Mutex<()> = Mutex::new(());
 
+    /// The one kernel at a time, and a poisoned lock is still a lock: a test that
+    /// panicked mid-session must report its own failure, not turn every test
+    /// after it into `PoisonError` noise.
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        TEST_KERNEL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A fresh directory under the system temp dir, named for the test.
+    fn scratch(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("rustkit-{label}-{}-{nonce}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    /// Removes a directory and the extra files SQLite may leave beside the db.
+    fn cleanup(dir: &Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(dir.join(format!("rustkit.db{suffix}")));
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn start(dir: &Path) {
+        let path = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: `path` is alive and NUL-terminated for the call.
+        unsafe { rustkit_start(path.as_ptr()) };
+    }
+
+    /// The list as the UI sees it, through the same call the UI makes.
+    fn live() -> serde_json::Value {
+        let snapshot = rustkit_snapshot();
+        let parsed = serde_json::from_str(&unsafe { text_of(snapshot) }).unwrap();
+        // SAFETY: `snapshot` came from `rustkit_snapshot` just above.
+        unsafe { rustkit_free(snapshot) };
+        parsed
+    }
+
+    fn titles(live: &serde_json::Value) -> Vec<String> {
+        live["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|todo| todo["title"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
     #[test]
     fn a_string_made_here_comes_back_here() {
         let text = out("{\"ok\":true}".to_owned());
@@ -602,6 +776,48 @@ mod tests {
         // SAFETY: `text` came from `out` just above.
         assert_eq!(unsafe { text_of(text) }, "{\"ok\":true}");
         unsafe { rustkit_free(text) };
+    }
+
+    #[test]
+    fn inspecting_a_file_leaves_the_callers_offset_alone() {
+        use std::io::{Seek, SeekFrom};
+        use std::os::unix::io::AsRawFd;
+
+        // ArkTS opens a photo, asks what it is, and hands the same descriptor to
+        // the image decoder a line later. A read that walks the shared offset to
+        // EOF would leave that decoder with an empty file — which is why this
+        // reads from the start with pread instead of streaming the descriptor.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rustkit-inspect-{}-{nonce}", std::process::id()));
+        fs::write(&path, b"abc").unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(1)).unwrap();
+
+        let name = CString::new("photo").unwrap();
+        // SAFETY: the descriptor is open and owned by `file`, which outlives the call.
+        let result = unsafe { rustkit_inspect(file.as_raw_fd(), name.as_ptr()) };
+        let reply: serde_json::Value = serde_json::from_str(&unsafe { text_of(result) }).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(
+            reply["file"]["bytes"], 3,
+            "the whole file, not the rest of it"
+        );
+        assert_eq!(
+            reply["file"]["sha256"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            file.stream_position().unwrap(),
+            1,
+            "the caller's offset moved: the decoder that reads this descriptor next would see EOF"
+        );
+        // SAFETY: `result` came from `rustkit_inspect` just above.
+        unsafe { rustkit_free(result) };
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -617,7 +833,7 @@ mod tests {
 
     #[test]
     fn opening_the_database_before_start_returns_an_error() {
-        let _guard = TEST_KERNEL.lock().unwrap();
+        let _guard = exclusive();
         let dir = CString::new(std::env::temp_dir().to_string_lossy().as_bytes()).unwrap();
         // SAFETY: `dir` remains alive and NUL-terminated for the call.
         let result = unsafe { rustkit_db_open(dir.as_ptr()) };
@@ -629,85 +845,127 @@ mod tests {
     }
 
     #[test]
-    fn failed_save_does_not_claim_success_or_change_the_live_list() {
-        let _guard = TEST_KERNEL.lock().unwrap();
+    fn a_missing_directory_starts_without_persistence() {
+        let _guard = exclusive();
+        // The parent is deliberately absent: the database cannot be created there.
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        // The parent is deliberately absent: writing todos.json.tmp must fail.
         let missing = std::env::temp_dir().join(format!(
             "rustkit-missing-parent-{}-{nonce}",
             std::process::id()
         ));
-        let dir = CString::new(missing.to_string_lossy().as_bytes()).unwrap();
-        // SAFETY: the directory path stays NUL-terminated for this call.
-        unsafe { rustkit_start(dir.as_ptr()) };
-        let title = CString::new("must not appear").unwrap();
+        let path = CString::new(missing.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: the path stays NUL-terminated for the call.
+        unsafe { rustkit_start(path.as_ptr()) };
+
+        // No database is a session that forgets, not an app that refuses to open:
+        // the list still works, and the log at start said durability was off.
+        let title = CString::new("this session only").unwrap();
         // SAFETY: title stays NUL-terminated for this call.
         let result = unsafe { rustkit_add(title.as_ptr()) };
-        let response: serde_json::Value =
-            serde_json::from_str(&unsafe { text_of(result) }).unwrap();
-        assert_eq!(response["ok"], false, "{response}");
-        assert!(response["error"].is_string(), "{response}");
+        let reply: serde_json::Value = serde_json::from_str(&unsafe { text_of(result) }).unwrap();
+        assert_eq!(reply["kind"], "todos", "{reply}");
+        assert_eq!(reply["todos"][0]["title"], "this session only");
         unsafe { rustkit_free(result) };
-        let snapshot = rustkit_snapshot();
-        let live: serde_json::Value = serde_json::from_str(&unsafe { text_of(snapshot) }).unwrap();
-        assert!(live["todos"].as_array().unwrap().is_empty(), "{live}");
-        unsafe { rustkit_free(snapshot) };
+        rustkit_stop();
+
+        // And the proof that it really did not save: start again, same path.
+        unsafe { rustkit_start(path.as_ptr()) };
+        assert!(
+            titles(&live()).is_empty(),
+            "nothing was written to a dir that does not exist"
+        );
         rustkit_stop();
     }
 
     #[test]
-    fn failed_toggle_and_remove_keep_existing_todos_unchanged() {
-        let _guard = TEST_KERNEL.lock().unwrap();
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "rustkit-blocked-save-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&dir).unwrap();
-        let original = vec![Todo {
-            id: 7,
-            title: "existing".to_owned(),
-            done: false,
-        }];
-        fs::write(
-            dir.join("todos.json"),
-            serde_json::to_vec(&original).unwrap(),
-        )
-        .unwrap();
-        // Occupy the temporary-file path with a directory: writes fail reliably.
-        fs::create_dir(dir.join("todos.json.tmp")).unwrap();
-        let path = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
-        // SAFETY: path stays NUL-terminated for this call.
-        unsafe { rustkit_start(path.as_ptr()) };
-        for result in [rustkit_toggle(7), rustkit_remove(7)] {
-            let reply: serde_json::Value =
-                serde_json::from_str(&unsafe { text_of(result) }).unwrap();
-            assert_eq!(reply["ok"], false, "{reply}");
+    fn the_list_survives_a_restart() {
+        let _guard = exclusive();
+        let dir = scratch("restart");
+
+        start(&dir);
+        for title in ["kept", "second"] {
+            let title = CString::new(title).unwrap();
+            // SAFETY: title stays NUL-terminated for the call.
+            let result = unsafe { rustkit_add(title.as_ptr()) };
             unsafe { rustkit_free(result) };
-            let snapshot = rustkit_snapshot();
-            let live: serde_json::Value =
-                serde_json::from_str(&unsafe { text_of(snapshot) }).unwrap();
-            assert_eq!(live["todos"][0]["id"], 7);
-            assert_eq!(live["todos"][0]["done"], false);
-            assert_eq!(live["todos"].as_array().unwrap().len(), 1);
-            unsafe { rustkit_free(snapshot) };
         }
+        let toggled = rustkit_toggle(1); // id 1: the first row
+                                         // SAFETY: `toggled` came from `rustkit_toggle` just above.
+        unsafe { rustkit_free(toggled) };
         rustkit_stop();
-        let disk: Vec<Todo> =
-            serde_json::from_slice(&fs::read(dir.join("todos.json")).unwrap()).unwrap();
-        assert_eq!(disk, original);
-        fs::remove_dir_all(dir).unwrap();
+
+        start(&dir);
+        let after = live();
+        assert_eq!(titles(&after), ["kept", "second"]);
+        assert_eq!(
+            after["todos"][0]["done"], true,
+            "the done flag came back too"
+        );
+
+        // The id counter is rebuilt from the rows, so a restart does not skip a
+        // number (the Go version's off-by-one, now pinned on this side too).
+        let title = CString::new("third").unwrap();
+        // SAFETY: title stays NUL-terminated for the call.
+        let added = unsafe { rustkit_add(title.as_ptr()) };
+        unsafe { rustkit_free(added) };
+        assert_eq!(live()["todos"][2]["id"], 3);
+        rustkit_stop();
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn a_json_list_from_the_old_version_is_imported_once() {
+        let _guard = exclusive();
+        let dir = scratch("import");
+        let legacy = vec![
+            Todo {
+                id: 7,
+                title: "from the JSON years".to_owned(),
+                done: false,
+            },
+            Todo {
+                id: 8,
+                title: "and a second one".to_owned(),
+                done: true,
+            },
+        ];
+        fs::write(dir.join("todos.json"), serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        start(&dir);
+        let after = live();
+        assert_eq!(titles(&after), ["from the JSON years", "and a second one"]);
+        assert_eq!(after["todos"][1]["done"], true);
+        rustkit_stop();
+
+        // Renamed, not deleted: the JSON is the only other copy, and the rename
+        // is also what stops the next launch from importing it again.
+        assert!(!dir.join("todos.json").exists(), "the old file moved away");
+        assert!(dir.join("todos.json.imported").exists());
+
+        // An emptied list stays empty across a restart. This is the resurrection
+        // the import is written to avoid: an empty table is a legitimate state.
+        start(&dir);
+        for id in [7, 8] {
+            let removed = rustkit_remove(id);
+            // SAFETY: `removed` came from `rustkit_remove` just above.
+            unsafe { rustkit_free(removed) };
+        }
+        assert!(titles(&live()).is_empty());
+        rustkit_stop();
+        start(&dir);
+        assert!(titles(&live()).is_empty(), "the import must not run twice");
+        rustkit_stop();
+
+        cleanup(&dir);
     }
 
     #[test]
     fn starting_twice_does_not_replace_the_live_core() {
-        let _guard = TEST_KERNEL.lock().unwrap();
+        let _guard = exclusive();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -747,13 +1005,18 @@ mod tests {
             worker.join().unwrap();
         }
         rustkit_stop();
-        let disk: Vec<Todo> =
-            serde_json::from_slice(&fs::read(dir.join("todos.json")).unwrap()).unwrap();
-        let titles: Vec<&str> = disk.iter().map(|todo| todo.title.as_str()).collect();
-        assert_eq!(titles.len(), 3);
-        assert!(titles.contains(&"kept"));
-        assert!(titles.contains(&"left"));
-        assert!(titles.contains(&"right"));
-        fs::remove_dir_all(dir).unwrap();
+
+        // Read it back the way the app does after a restart: the rows and the
+        // concurrent writers survive, and the file the UI's copy came from is the
+        // database — not a JSON sidecar.
+        start(&dir);
+        let after = live();
+        let titles = titles(&after);
+        assert_eq!(titles.len(), 3, "{titles:?}");
+        assert!(titles.contains(&"kept".to_owned()), "{titles:?}");
+        assert!(titles.contains(&"left".to_owned()), "{titles:?}");
+        assert!(titles.contains(&"right".to_owned()), "{titles:?}");
+        rustkit_stop();
+        cleanup(&dir);
     }
 }
