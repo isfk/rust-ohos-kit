@@ -1,6 +1,9 @@
 /node_modules
 /oh_modules
 /local.properties
+# Per-machine, per-bundle signing: DevEco writes this machine's cert paths and
+# passwords here. The tracked template is build-profile.example.json5.
+/build-profile.json5
 /.idea
 **/build
 /.hvigor

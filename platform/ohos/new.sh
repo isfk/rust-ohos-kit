@@ -1,19 +1,24 @@
 #!/bin/sh
 # Create an independent Rust + ArkTS project from the committed kit template.
-# Usage: platform/ohos/new.sh <name> [dir] [--bundle com.example.name] [--label 'App Name']
+# Usage: platform/ohos/new.sh <name> [dir] [--bundle com.example.name] [--label 'App Name'] [--git]
 # Ignored files (signing credentials, local SDK paths, build outputs) never enter it.
 set -eu
 
 usage() {
-    echo 'usage: platform/ohos/new.sh <name> [dir] [--bundle com.example.name] [--label "App Name"]' >&2
+    echo 'usage: platform/ohos/new.sh <name> [dir] [--bundle com.example.name] [--label "App Name"] [--git]' >&2
 }
 
 name=
 dir=
 bundle=
 label=
+git_init=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --git)
+            git_init=1
+            shift
+            ;;
         --bundle|--label)
             option=$1
             if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 2; fi
@@ -85,7 +90,11 @@ mkdir -p "$dir"
 git -C "$root" archive HEAD -- .gitignore Cargo.toml Cargo.lock .cargo rust app \
     platform/ohos/build.sh platform/ohos/run.sh | tar -xf - -C "$dir"
 
-# A fresh bundle needs its own signature; this file is intentionally unsigned.
+# A signing profile names exactly one bundle, so the default is the unsigned
+# template. When the requested bundle is the one this machine already signs,
+# the kit's own profile is reusable — and that is what makes ./run.sh work
+# straight after new.sh instead of costing a DevEco round-trip.
+template_bundle=$(sed -n 's/.*"bundleName"[^"]*"\([^"]*\)".*/\1/p' "$dir/app/AppScope/app.json5")
 cp "$dir/app/build-profile.example.json5" "$dir/app/build-profile.json5"
 python3 - "$dir" "$bundle" "$label" <<'PY'
 import json
@@ -112,6 +121,11 @@ for path, key in (
     values[0]['value'] = label
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 PY
+
+if [ "$bundle" = "$template_bundle" ] && [ -f "$root/app/build-profile.json5" ]; then
+	cp "$root/app/build-profile.json5" "$dir/app/build-profile.json5"
+	echo "rustkit: reused this machine's signing (bundle unchanged)" >&2
+fi
 
 cat >"$dir/build.sh" <<'SH'
 #!/bin/sh
@@ -145,5 +159,16 @@ carried over. Internal crate and NAPI library names remain `rustkit-*` and
 The copied ArkTS UI is the kit demo (including its RustKit screen title);
 customize its features and title for your app. No `ohpm install` is run by the generator.
 MD
+if [ "$git_init" = 1 ]; then
+	# A repository is opt-in: the default target is apps/<name>, which sits inside
+	# the kit's own work tree, and a nested .git there is a different project.
+	if up=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) && [ "$up" != "$dir" ]; then
+		echo "rustkit: warning: $dir is inside the repository $up; this becomes a separate one" >&2
+	fi
+	git -C "$dir" init -q
+	echo "rustkit: git initialised in $dir — the first commit is yours:" >&2
+	echo "rustkit:   cd $dir && git add -A && git commit" >&2
+fi
+
 printf 'rustkit: created %s (bundle %s, unsigned)\n' "$dir" "$bundle"
 printf '  Sign app/ in DevEco Studio, then run: cd %s && ./run.sh\n' "$dir" >&2

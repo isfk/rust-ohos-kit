@@ -6,12 +6,20 @@
 // No signing here on purpose: copy it to build-profile.json5 and sign once in
 // DevEco (Project Structure → Signing Configs), or just run
 // platform/ohos/run.sh, which does the copy for you.
+//
+// That signing is two writes: the material under signingConfigs, and
+// products[].signingConfig pointing at it. Both live here as an empty pair on
+// purpose: with the reference in place but no material, hvigor says "Will skip
+// sign — no signingConfigs profile is configured" and still builds an unsigned
+// HAP; without the reference it says "No signingConfig found for product
+// default", which names neither the cause nor the fix.
 {
   "app": {
     "signingConfigs": [],
     "products": [
       {
         "name": "default",
+        "signingConfig": "default",
         "targetSdkVersion": "26.0.0",
         "compatibleSdkVersion": "26.0.0",
         "runtimeOS": "HarmonyOS",

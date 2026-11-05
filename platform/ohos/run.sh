@@ -43,6 +43,18 @@ if [ ! -f "$project/build-profile.json5" ]; then
 	echo "rustkit: (DevEco → Project Structure → Signing Configs → Automatically generate signature)" >&2
 fi
 
+# DevEco's "Automatically generate signature" writes two separate things: the
+# material under signingConfigs, and products[].signingConfig that points at it.
+# It can leave the first without the second, and then the only symptom is
+# hvigor's "No signingConfig found for product default" after a full build.
+profile=$project/build-profile.json5
+if grep -q '"signingConfigs": \[$' "$profile" && ! grep -Eq '"signingConfig"[[:space:]]*:' "$profile"; then
+	echo "rustkit: $profile has signing material but no product references it." >&2
+	echo "rustkit: hvigor wants \"signingConfig\": \"default\" under app.products[] — add it, or" >&2
+	echo "rustkit: press Apply in DevEco → Project Structure → Signing Configs, then run again." >&2
+	exit 1
+fi
+
 "$here/build.sh" "$project" >/dev/null
 
 echo "rustkit: building the HAP" >&2
@@ -51,9 +63,10 @@ echo "rustkit: building the HAP" >&2
 
 hap=$project/entry/build/default/outputs/default/entry-default-signed.hap
 if [ ! -f "$hap" ]; then
-	echo "rustkit: the app isn't signed for $bundle." >&2
+	echo "rustkit: hvigor left no signed HAP for $bundle." >&2
 	echo "rustkit: open $project in DevEco once → Project Structure → Signing Configs →" >&2
 	echo "rustkit: 'Automatically generate signature' (a Huawei ID), then run this again." >&2
+	echo "rustkit: (a profile names one bundle — a new bundle ID needs its own signature)" >&2
 	exit 1
 fi
 
