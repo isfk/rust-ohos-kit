@@ -30,6 +30,7 @@ import { TodoList } from '../features/todos/TodoList';
 struct Index {
   /** The list: this page owns it, and only this page writes it. */
   @Local todos: Todo[] = [];
+  @Local todoError: string = '';
   /** Is the page on screen? What the accelerometer uses to decide whether to run. */
   @Local active: boolean = false;
   /**
@@ -85,16 +86,33 @@ struct Index {
 
   // The core answers with the list after each change, so there is nothing to
   // re-read and no second source of truth.
-  private add(title: string): void {
-    this.todos = rustcore.add(title);
+  private add(title: string): boolean {
+    try {
+      this.todos = rustcore.add(title);
+      this.todoError = '';
+      return true;
+    } catch (err) {
+      this.todoError = `${err}`;
+      return false;
+    }
   }
 
   private toggle(id: number): void {
-    this.todos = rustcore.toggle(id);
+    try {
+      this.todos = rustcore.toggle(id);
+      this.todoError = '';
+    } catch (err) {
+      this.todoError = `${err}`;
+    }
   }
 
   private remove(id: number): void {
-    this.todos = rustcore.remove(id);
+    try {
+      this.todos = rustcore.remove(id);
+      this.todoError = '';
+    } catch (err) {
+      this.todoError = `${err}`;
+    }
   }
 
   /** The panel's own count. It is page chrome now, so the page counts it. */
@@ -151,10 +169,16 @@ struct Index {
           .alignItems(VerticalAlign.Center)
 
           TodoComposer({
-            onAdd: (title: string): void => {
-              this.add(title);
+            onAdd: (title: string): boolean => {
+              return this.add(title);
             },
           })
+
+          if (this.todoError.length > 0) {
+            Text(this.todoError)
+              .fontSize(12)
+              .fontColor($r('app.color.danger'))
+          }
 
           TodoList({
             todos: this.todos,

@@ -143,6 +143,30 @@ function todosOf(json: string): Todo[] {
   }
 }
 
+/** Mutation errors must not be interpreted as an empty (successful) list. */
+function mutatedTodos(json: string): Todo[] {
+  let e: TodoMutationReply;
+  try {
+    e = JSON.parse(json) as TodoMutationReply;
+  } catch (err) {
+    throw new Error(`Invalid todo response: ${err}`);
+  }
+  if (e.ok === false) {
+    throw new Error(e.error ?? 'Could not save todos');
+  }
+  if (e.kind !== 'todos' || e.todos === undefined) {
+    throw new Error('Invalid todo response');
+  }
+  return e.todos;
+}
+
+interface TodoMutationReply {
+  ok?: boolean;
+  error?: string;
+  kind?: string;
+  todos?: Todo[];
+}
+
 export class RustCore {
   /**
    * Takes the core's events. Call it before start(): the core pushes the
@@ -152,7 +176,7 @@ export class RustCore {
     core.listen((json: string) => {
       try {
         fn(JSON.parse(json) as Event);
-      } catch (err) {
+      } catch {
         // a malformed event isn't worth taking the UI down for
       }
     });
@@ -172,15 +196,15 @@ export class RustCore {
   }
 
   add(title: string): Todo[] {
-    return todosOf(core.add(title));
+    return mutatedTodos(core.add(title));
   }
 
   toggle(id: number): Todo[] {
-    return todosOf(core.toggle(id));
+    return mutatedTodos(core.toggle(id));
   }
 
   remove(id: number): Todo[] {
-    return todosOf(core.remove(id));
+    return mutatedTodos(core.remove(id));
   }
 
   remaining(): number {
@@ -227,7 +251,7 @@ export class RustCore {
   inspect(fd: number, name: string): InspectResult {
     try {
       return JSON.parse(core.inspect(fd, name)) as InspectResult;
-    } catch (err) {
+    } catch {
       const out: InspectResult = { ok: false, error: 'bad answer from the core' };
       return out;
     }
@@ -252,7 +276,7 @@ export class RustCore {
     try {
       const page = JSON.parse(core.rowsJson(offset, limit)) as RowsPage;
       return page.rows ?? [];
-    } catch (err) {
+    } catch {
       return [];
     }
   }

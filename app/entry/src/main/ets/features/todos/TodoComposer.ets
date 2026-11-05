@@ -7,15 +7,16 @@
 @ComponentV2
 export struct TodoComposer {
   @Local private draft: string = '';
-  @Event onAdd: (title: string) => void = (title: string): void => {};
+  @Event onAdd: (title: string) => boolean = (title: string): boolean => false;
 
   private submit(): void {
     const title = this.draft.trim();
     if (title.length === 0) {
       return;
     }
-    this.onAdd(title);
-    this.draft = '';
+    if (this.onAdd(title)) {
+      this.draft = '';
+    }
   }
 
   build() {

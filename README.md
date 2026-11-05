@@ -3,7 +3,7 @@
 **同一个问题，换一种语言问：把 HarmonyOS 应用的逻辑放进 Rust，要付多少代价。**
 
 > **实验组** · 对照组：[isfk/go-ohos-kit](https://github.com/isfk/go-ohos-kit)
-> 同一个 ArkTS 外壳、同样的八块面板，内核是 Go：**4 个 runtime 补丁**，产物 11 MB（这里 2.7 MB）。
+> 同一个 ArkTS 外壳、同样的八块面板，内核是 Go：**3 处 runtime 修补 + 1 个符号声明**（4 个 overlay 文件），产物 11 MB（这里 2.7 MB）。
 > 那边用纯 Go 的 SQLite、内核零 C 依赖，代价是同样的 20k 行 seed 59.3 ms（这里 12.3 ms）——
 > 它买到的是"不用编 C"这件事本身。补丁逐条对照、桥读数、体积表见[本仓库的 CONTEXT.md](CONTEXT.md)。
 >
@@ -16,7 +16,7 @@ Go 那份的代价不止补丁：GOROOT 靠 `-overlay` 维护，每升级一次 
 
 | | Go（对照组） | Rust（实验组） |
 |---|---|---|
-| 交叉编译前的准备 | 4 个 runtime 补丁 + overlay 工具 + 每版 Go 重验 | **无**（NDK 自带 cargo 要的 linker） |
+| 交叉编译前的准备 | 3 处 runtime 修补 + 1 个符号声明（共 4 个 overlay 文件），每版 Go 重验 | **无**（NDK 自带 cargo 要的 linker） |
 | 产物大小 | 11 MB | **2.7 MB**（不含 SQLite 时 788 KB） |
 | `TLS_TPREL64` 重定位 | 必须是 0（补丁就是为了它） | **本来就是 0** |
 | 内核能否脱离设备测试 | 能（`go test ./core/`） | 能（`cargo test -p rustkit-core`） |
@@ -40,10 +40,10 @@ Go 那份的代价不止补丁：GOROOT 靠 `-overlay` 维护，每升级一次 
 ## 为什么它更省事
 
 Go 是带着一整套操作系统进场的：调度器、TLS 约定、`_rt0` 启动流程、auxv 探测。`dlopen`
-进来的 `.so` 没有这些，所以 Go 必须假装自己是那个进程，于是有了那四个补丁。
+进来的 `.so` 没有这些，所以 Go 必须假装自己是那个进程，于是有了三处 runtime 修补及一个符号声明文件。
 
 Rust 没有运行时可言：一个 ELF 里的代码，libc 由宿主进程准备好，线程局部变量走 `__thread`。
-那四笔债一笔都不用还 —— 逐条对照见 [`CONTEXT.md`](CONTEXT.md) 第二节。
+这四个 overlay 文件的维护负担一笔都不用承担 —— 逐条对照见 [`CONTEXT.md`](CONTEXT.md) 第二节。
 
 代价落在别的地方，而且只有一处：**数据库要编 C**。`rusqlite` 的 bundled 把 SQLite 编进产物，
 `.so` 因此从 788 KB 长到 2.7 MB（仍比 Go 版的 11 MB 小 4 倍）。这笔 C 被关在 `rust/store`

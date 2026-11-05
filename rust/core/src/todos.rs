@@ -15,7 +15,7 @@ pub struct Todo {
 ///
 /// The id counter lives here and not in the caller because "never reuse an id"
 /// is a property of the list, not of the button that adds a row.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct List {
     todos: Vec<Todo>,
     next: i64,

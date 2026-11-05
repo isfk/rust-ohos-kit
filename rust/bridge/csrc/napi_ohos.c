@@ -20,6 +20,7 @@
 #include <napi/native_api.h>
 #include <hilog/log.h>
 
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,17 +60,20 @@ extern char *rustkit_db_reset(void);
 
 // The function JavaScript gave to listen(), and the channel to it.
 static napi_threadsafe_function emitFn;
+static pthread_mutex_t emitMu = PTHREAD_MUTEX_INITIALIZER;
 
 // emitToJS is what Rust calls, from its own thread, with a string it owns for
 // the length of the call only — so it is copied before it is queued.
 static void emitToJS(const char *json) {
     if (!json) return;
-    if (!emitFn) return; // the UI stopped listening
     char *copy = strdup(json);
     if (!copy) return;
-    if (napi_call_threadsafe_function(emitFn, copy, napi_tsfn_nonblocking) != napi_ok) {
-        free(copy);
-    }
+    pthread_mutex_lock(&emitMu);
+    napi_status status = emitFn ? napi_call_threadsafe_function(emitFn, copy,
+                                                                 napi_tsfn_nonblocking)
+                                : napi_closing;
+    pthread_mutex_unlock(&emitMu);
+    if (status != napi_ok) free(copy);
 }
 
 // emitCB runs on the main thread: JavaScript's turn.
@@ -121,6 +125,7 @@ static napi_value Listen(napi_env env, napi_callback_info info) {
         napi_throw_type_error(env, NULL, "listen(fn): fn must be a function");
         return NULL;
     }
+    pthread_mutex_lock(&emitMu);
     if (emitFn) {
         rustkit_set_emit(NULL);
         napi_release_threadsafe_function(emitFn, napi_tsfn_release);
@@ -132,9 +137,11 @@ static napi_value Listen(napi_env env, napi_callback_info info) {
                                         &emitFn) != napi_ok) {
         loge("listen: no threadsafe function");
         emitFn = NULL;
+        pthread_mutex_unlock(&emitMu);
         return NULL;
     }
     rustkit_set_emit(emitToJS);
+    pthread_mutex_unlock(&emitMu);
     return NULL;
 }
 
@@ -341,7 +348,7 @@ static napi_value RowsJSON(napi_env env, napi_callback_info info) {
     return toJS(env, rustkit_rows_json(offset, limit));
 }
 
-// dbOpen(filesDir): not ported yet — it answers with the reason (CONTEXT.md).
+// dbOpen(filesDir): opens the app's SQLite store and returns its path.
 static napi_value DbOpen(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];

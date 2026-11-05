@@ -34,12 +34,16 @@ light=app/entry/src/main/resources/base/element/color.json
 dark=app/entry/src/main/resources/dark/element/color.json
 if [ -f "$light" ] && [ -f "$dark" ]; then
 	names() { grep -o '"name": *"[^"]*"' "$1" | sed 's/.*"\(.*\)"/\1/' | sort; }
-	missing=$(comm -23 "$(names "$light" | tr '\n' ' ' | tr ' ' '\n')" "$(names "$dark" | tr '\n' ' ' | tr ' ' '\n')" | tr -d ' ')
-	if [ -n "$missing" ]; then
-		echo "dark colour is missing: $missing" >&2
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT INT TERM
+	names "$light" >"$tmp/light"
+	names "$dark" >"$tmp/dark"
+	if ! cmp -s "$tmp/light" "$tmp/dark"; then
+		echo "light/dark colour token sets differ" >&2
+		cmp "$tmp/light" "$tmp/dark" >&2 || true
 		exit 1
 	fi
-	echo "both ramps declare $(names "$light" | wc -l | tr -d ' ') tokens"
+	echo "both ramps declare $(wc -l <"$tmp/light" | tr -d ' ') matching tokens"
 else
 	echo "no app colours to compare (app not carried over)" >&2
 fi
