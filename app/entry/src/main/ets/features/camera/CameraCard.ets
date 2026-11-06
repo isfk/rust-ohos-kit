@@ -9,7 +9,18 @@
 import { camera } from '@kit.CameraKit';
 import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { display } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppLife, appLife } from '../../state/AppLife';
+
+const DOMAIN = 0x0000;
+
+/**
+ * The aspect of the preview *panel*. 16:9 is not vanity: an idle panel has to
+ * stay short, or a 4:3 box pushes every panel below it off the first screen.
+ * The frames' own aspect is separate — see `aspect`.
+ */
+const PANEL_ASPECT: number = 16 / 9;
 
 @ComponentV2
 export struct CameraCard {
@@ -20,11 +31,15 @@ export struct CameraCard {
   private surfaceId: string = '';
   private wanted: boolean = false;
   /**
-   * The preview's own aspect: a fixed height would squash the frames. 16:9 is
-   * the canvas until a profile arrives, because 4:3 made an idle panel tall
-   * enough to push everything below it off the first screen.
+   * The frames' own aspect: sizing the box with a profile's ratio squashes them.
+   * 16:9 is the canvas until a profile arrives, because 4:3 made an idle panel
+   * tall enough to push everything below it off the first screen.
+   *
+   * Held upright, the camera delivers an *upright* picture (the profile says
+   * 1280×720, but the content is turned), so this value is below 1 in portrait —
+   * narrower than the box, and therefore taller than it.
    */
-  @Local private aspect: number = 16 / 9;
+  @Local private aspect: number = PANEL_ASPECT;
 
   // The page says when it's gone, and the ability says when the app goes to
   // the background: a camera left open holds the device and eats the battery,
@@ -104,7 +119,18 @@ export struct CameraCard {
           profile = p;
         }
       }
-      this.aspect = profile.size.width / profile.size.height;
+      // Every preview profile is landscape (1280×720 and friends), but the
+      // camera rotates the picture to match the *screen* before handing it to
+      // this surface: held upright, what arrives is a portrait frame. Sizing the
+      // canvas from the profile's ratio stretched the picture ~3x sideways
+      // (measured), so the ratio has to come from the screen, not the profile.
+      const screen = display.getDefaultDisplaySync();
+      const portrait: boolean = screen.width < screen.height;
+      this.aspect = portrait ?
+        profile.size.height / profile.size.width :
+        profile.size.width / profile.size.height;
+      hilog.info(DOMAIN, 'camera', 'profile %{public}dx%{public}d screen %{public}dx%{public}d aspect %{public}s',
+        profile.size.width, profile.size.height, screen.width, screen.height, this.aspect.toFixed(4));
       const preview: camera.PreviewOutput = manager.createPreviewOutput(profile, this.surfaceId);
       const session: camera.PhotoSession = manager.createSession<camera.PhotoSession>(camera.SceneMode.NORMAL_PHOTO);
 
@@ -176,6 +202,12 @@ export struct CameraCard {
       // service writes frames to, and the UI never sees them. It keeps its
       // size when idle — a zero-height XComponent has no surface to give — and
       // says so on top of it.
+      //
+      // The box has the panel's ratio (16:9); the picture has the camera's
+      // (`this.aspect`, portrait when held upright). When they differ the frame
+      // is **centre-cropped**: the XComponent takes the picture's real ratio and
+      // ends up taller than the box, and `.clip(true)` cuts the overhang. Letting
+      // the XComponent follow the box instead widened a 9:16 frame ~3x (measured).
       Stack() {
         XComponent({
           id: 'cameraPreview',
@@ -183,7 +215,7 @@ export struct CameraCard {
           controller: this.controller,
         })
           .width('100%')
-          .height('100%')
+          .aspectRatio(this.aspect)
           .onLoad(() => {
             this.surfaceId = this.controller.getXComponentSurfaceId();
             if (this.wanted && !this.running) {
@@ -212,7 +244,7 @@ export struct CameraCard {
         .opacity(this.running ? 0 : 1)
       }
       .width('100%')
-      .aspectRatio(this.aspect)
+      .aspectRatio(PANEL_ASPECT)
       .borderRadius(8)
       .backgroundColor($r('app.color.surface_raised'))
       .clip(true)

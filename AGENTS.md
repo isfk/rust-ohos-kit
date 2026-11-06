@@ -135,6 +135,12 @@ Rust 内核       ← rust/core：状态、算术、逻辑；线程随便开
   `--target aarch64-unknown-linux-ohos` 出现。
 - **跨编译不需要 `rustup target add`** 之外的准备（本机已有该 target）。如果没有：
   `rustup target add aarch64-unknown-linux-ohos`。
+- **相机预览的比例要按屏幕朝向算，不是按 profile 算**（本仓库踩过，真机）。档位全是横的
+  （`1280×720`），但竖屏拿着时摄像头**把画面转好了才送进 surface**，到手是一张竖图；
+  照 `profile` 的比例画 = 横向拉宽约 3 倍。正确写法：
+  `screen.width < screen.height` → `h/w`，否则 `w/h`（`display`, `@kit.ArkUI`）。
+  面板盒子可以另按 16:9（闲置面板不能太高），画面按真实比例撑出去、由 `.clip(true)`
+  居中裁掉 —— **裁切，不拉伸**。
 
 ## 已被证伪 / 不用再论证
 
